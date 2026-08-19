@@ -33,9 +33,11 @@ synth_design \
     -generic "LOOP=$LOOP" \
     -generic "N_CORES=$N_CORES"
 
+# Post-synthesis utilization
+report_utilization -file "$OUTDIR/util_synth.rpt"
+
 # Apply clock constraint and opt/place/route
-read_xdc [file join [file dirname [info script]] "ooc.xdc"]
-set_property PERIOD $PERIOD [get_clocks clk]
+create_clock -name clk -period $PERIOD [get_ports clk]
 
 opt_design
 place_design

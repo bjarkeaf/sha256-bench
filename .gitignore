@@ -23,3 +23,19 @@ results.csv
 
 # Project-local Claude instructions (not for version control)
 CLAUDE.md
+
+
+@"
+# Vivado generated files
+*.runs/
+*.cache/
+*.gen/
+*.hw/
+*.sim/
+.Xil/
+*.jou
+*.log
+
+# Local benchmark output
+clockInfo.txt
+"@ | Set-Content .gitignore
