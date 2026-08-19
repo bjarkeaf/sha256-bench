@@ -38,6 +38,7 @@ def parse_timing(path):
             # Match: WNS(ns)     TNS(ns)  ...
             # then next data line
             if 'WNS' in line and 'TNS' in line:
+                next(f, '')  # skip dashes line
                 data = next(f, '').strip().split()
                 if data:
                     try:
