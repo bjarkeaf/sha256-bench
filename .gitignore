@@ -1,0 +1,25 @@
+# Vivado outputs
+*.jou
+*.log
+*.pb
+*.str
+*.dcp
+*.xml
+.Xil/
+vivado_ooc_*/
+webtalk*
+*.xpr
+*.cache/
+*.hw/
+*.ip_user_files/
+*.sim/
+
+# Simulation outputs
+*.vvp
+*.vcd
+
+# Benchmark results (generated, not committed)
+results.csv
+
+# Project-local Claude instructions (not for version control)
+CLAUDE.md
