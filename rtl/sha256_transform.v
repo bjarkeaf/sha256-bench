@@ -43,7 +43,12 @@ module sha256_transform #(
 	input [5:0] cnt,
 	input [255:0] rx_state,
 	input [511:0] rx_input,
-	output reg [255:0] tx_hash
+	output reg [255:0] tx_hash,
+	// Combinational tap on the last digester's registered state. Used by the
+	// streaming wrapper (sha256_stream_top) to do the SHA-256 finalization
+	// externally with a rx_state pipelined per stream, avoiding the extra
+	// cycle of latency introduced by the tx_hash output register.
+	output wire [255:0] tx_state_final
 );
 
 	// Constants defined by the SHA-2 standard.
@@ -95,6 +100,8 @@ module sha256_transform #(
 		end
 
 	endgenerate
+
+	assign tx_state_final = HASHERS[64/LOOP-6'd1].state;
 
 	always @ (posedge clk)
 	begin
