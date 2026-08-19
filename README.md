@@ -13,6 +13,8 @@ At `LOOP=1`, `N_CORES=1`: one 512-bit block enters the pipeline every clock cycl
 
 See `../README.md` (FPGA hashing project root) for the motivation: line-rate SHA-256 for AI compute verification at 400 Gbps.
 
+See **[SETUP.md](SETUP.md)** for a step-by-step Windows setup guide (Vivado install, running the sweep, reading results).
+
 ## RTL source
 
 Two files lifted verbatim from [Open-Source-FPGA-Bitcoin-Miner](https://github.com/progranism/Open-Source-FPGA-Bitcoin-Miner) (GPL-3.0):
