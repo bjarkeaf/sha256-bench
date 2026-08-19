@@ -19,12 +19,12 @@ See **[SETUP.md](SETUP.md)** for a step-by-step Windows setup guide (Vivado inst
 
 Two files lifted verbatim from [Open-Source-FPGA-Bitcoin-Miner](https://github.com/progranism/Open-Source-FPGA-Bitcoin-Miner) (GPL-3.0):
 
-- `rtl/sha256_functions.v` — combinational SHA-256 round primitives (e0, e1, ch, maj, s0, s1)
-- `rtl/sha256_transform.v` — parametric SHA-256 compression core (`sha256_transform` + `sha256_digester`)
+- `rtl/sha256_functions.v`: combinational SHA-256 round primitives (e0, e1, ch, maj, s0, s1)
+- `rtl/sha256_transform.v`: parametric SHA-256 compression core (`sha256_transform` + `sha256_digester`)
 
 One new file:
 
-- `rtl/bench_top.v` — instantiates `N_CORES` transforms, shared scheduling, per-core LFSR input, XOR-accumulator output
+- `rtl/bench_top.v`: instantiates `N_CORES` transforms, shared scheduling, per-core LFSR input, XOR-accumulator output
 
 ## Simulate
 
@@ -41,7 +41,7 @@ make sim LOOP=4 N_CORES=2
 ```
 
 The testbench prints:
-- `PASS correctness` / `FAIL correctness` — checks SHA-256("abc") = `ba7816bf...`
+- `PASS correctness` / `FAIL correctness`: checks SHA-256("abc") = `ba7816bf...`
 - `THROUGHPUT` line with cycles/hash and aggregate bits/cycle
 - `OVERALL: PASS` / `OVERALL: FAIL`
 
@@ -69,7 +69,7 @@ cd sha256-bench
 bash bench/sweep.sh
 ```
 
-Runs all 24 combinations (6 LOOP values × 4 N_CORES values) and builds `results.csv`. Large unroll factors with many cores (`LOOP=1, N_CORES=8`) may fail place-and-route on the 53.2k-LUT Z-7020 — these are logged as FAILED.
+Runs all 24 combinations (6 LOOP values × 4 N_CORES values) and builds `results.csv`. Large unroll factors with many cores (`LOOP=1, N_CORES=8`) may fail place-and-route on the 53.2k-LUT Z-7020; these are logged as FAILED.
 
 ## Target
 
