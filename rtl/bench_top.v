@@ -53,9 +53,11 @@ module bench_top #(
         // 64-bit Fibonacci LFSR (poly x^64+x^63+x^61+x^60+1), unique seed per core
         reg [63:0] lfsr;
 
+        localparam [31:0] CORE_ID = g + 1;
+
         always @(posedge clk) begin
             if (rst)
-                lfsr <= 64'hba5eba11deadbeef ^ {32'd0, g + 1};
+                lfsr <= 64'hba5eba11deadbeef ^ {32'd0, CORE_ID};
             else
                 lfsr <= {lfsr[62:0], lfsr[63] ^ lfsr[62] ^ lfsr[60] ^ lfsr[59]};
         end
