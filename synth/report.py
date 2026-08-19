@@ -48,6 +48,10 @@ def parse_timing(path):
     return wns
 
 def main():
+    if len(sys.argv) < 3:
+        print("Usage: python report.py <LOOP> <N_CORES> [PERIOD_NS] [PART]")
+        print("Example: python report.py 1 1")
+        sys.exit(1)
     loop     = int(sys.argv[1])
     n_cores  = int(sys.argv[2])
     period   = float(sys.argv[3]) if len(sys.argv) > 3 else 2.5
