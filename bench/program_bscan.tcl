@@ -73,6 +73,21 @@ open_hw_target -jtag_mode on $target
 # the LSB is shifted in first and lands in the device NEAREST TDO (last in
 # the list).  So the offset of device i in the concatenated IR word is the
 # sum of IR lengths of devices at HIGHER indices.
+# Determine IR length for a device. Property names vary across Vivado
+# versions, so probe a few and fall back to name-based defaults (ARM Cortex
+# DAPs are always 4-bit IR, 7-series PL TAPs are always 6-bit).
+proc device_ir_len {d} {
+    foreach prop {REGISTER.JTAG.IR_LENGTH IR_LENGTH JTAG.IR_LENGTH} {
+        if {![catch {get_property $prop $d} val] && $val ne ""} {
+            return $val
+        }
+    }
+    set n [string tolower [get_property NAME $d]]
+    if {[string match "*arm*" $n] || [string match "*dap*" $n]} { return 4 }
+    if {[string match "*7z*" $n]  || [string match "*xc7*" $n]}  { return 6 }
+    error "Unknown IR length for device [get_property NAME $d]"
+}
+
 set devices [get_hw_devices]
 puts "JTAG chain has [llength $devices] device(s):"
 set our_idx      -1
@@ -80,18 +95,18 @@ set total_ir_len 0
 set ir_lens      {}
 set idx 0
 foreach d $devices {
-    set ir_len [get_property REGISTER.JTAG.IR_LENGTH $d]
+    set ir_len [device_ir_len $d]
     set name   [get_property NAME $d]
     lappend ir_lens $ir_len
     puts [format "  \[%d\] %s IR_LEN=%d" $idx $name $ir_len]
-    if {[string match "*7z020*" $name]} {
+    if {[string match "*7z020*" $name] || [string match "*xc7z*" $name]} {
         set our_idx $idx
     }
     incr total_ir_len $ir_len
     incr idx
 }
 if {$our_idx < 0} {
-    error "Could not find *7z020* in JTAG chain"
+    error "Could not find PL device (*7z020* or *xc7z*) in JTAG chain"
 }
 
 # Compute our device's IR offset (bit position in the ir_val LSB-first word).
