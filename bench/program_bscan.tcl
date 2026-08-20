@@ -56,20 +56,74 @@ after 2000
 # ---------------------------------------------------------------------------
 # Read back via BSCAN USER1
 # ---------------------------------------------------------------------------
-# Low-level IR/DR scans require a hw_jtag object, which Vivado creates only
-# when the target is opened in JTAG mode. BSCANE2 JTAG_CHAIN(1) is USER1;
-# 7-series USER1 uses the six-bit instruction value 0x02.
+# Low-level IR/DR scans operate on the WHOLE JTAG chain, not just the PL
+# device.  Zynq-7000 exposes the ARM Cortex-A9 DAP TAP alongside the PL TAP,
+# so USER1 (6-bit 0x02) must be sandwiched between BYPASS instructions for
+# every other device in the chain.  Same for DR: each other device
+# contributes 1 BYPASS bit.  Shifting only 6 IR bits corrupts both TAPs and
+# lands them in BYPASS, at which point every DR scan just shuttles TDI
+# through BYPASS and comes back as garbage (e.g. STREAM 00 = 0...0002 when
+# we shift in selector 1 through 2 BYPASS bits).
 set target [current_hw_target]
 close_hw_target
 open_hw_target -jtag_mode on $target
-scan_ir_hw_jtag 6 -tdi 02
+
+# Enumerate the chain.  get_hw_devices returns devices in JTAG order from
+# TDI (index 0) to TDO (last index).  When shifting an integer with -tdi,
+# the LSB is shifted in first and lands in the device NEAREST TDO (last in
+# the list).  So the offset of device i in the concatenated IR word is the
+# sum of IR lengths of devices at HIGHER indices.
+set devices [get_hw_devices]
+puts "JTAG chain has [llength $devices] device(s):"
+set our_idx      -1
+set total_ir_len 0
+set ir_lens      {}
+set idx 0
+foreach d $devices {
+    set ir_len [get_property REGISTER.JTAG.IR_LENGTH $d]
+    set name   [get_property NAME $d]
+    lappend ir_lens $ir_len
+    puts [format "  \[%d\] %s IR_LEN=%d" $idx $name $ir_len]
+    if {[string match "*7z020*" $name]} {
+        set our_idx $idx
+    }
+    incr total_ir_len $ir_len
+    incr idx
+}
+if {$our_idx < 0} {
+    error "Could not find *7z020* in JTAG chain"
+}
+
+# Compute our device's IR offset (bit position in the ir_val LSB-first word).
+set our_ir_offset 0
+for {set i [expr {$our_idx + 1}]} {$i < [llength $devices]} {incr i} {
+    incr our_ir_offset [lindex $ir_lens $i]
+}
+set num_dev  [llength $devices]
+set all_ones [expr {(1 << $total_ir_len) - 1}]
+# BYPASS everywhere, then punch USER1 (0x02) into our 6-bit slot.
+set clear_mask [expr {~(0x3F << $our_ir_offset) & $all_ones}]
+set ir_val     [expr {($all_ones & $clear_mask) | (0x02 << $our_ir_offset)}]
+puts [format "IR: our device idx=%d, offset=%d in %d-bit IR, ir_val=0x%x" \
+             $our_idx $our_ir_offset $total_ir_len $ir_val]
+scan_ir_hw_jtag $total_ir_len -tdi [format %x $ir_val]
+
+# DR: our 257-bit USER1 register plus 1 BYPASS bit per other device.  Same
+# ordering: bits shifted in first (LSB of dr_val) end up nearest TDO.  Our
+# DR offset = number of devices at indices > our_idx.
+set our_dr_offset [expr {$num_dev - $our_idx - 1}]
+set dr_total      [expr {257 + $num_dev - 1}]
+puts [format "DR: total=%d bits, our 257-bit slot at offset %d" \
+             $dr_total $our_dr_offset]
 
 # ---------------------------------------------------------------------------
 # Parse helpers
 # ---------------------------------------------------------------------------
-# Return {done digest_hex} from the hexadecimal value returned by a 257-bit
-# scan. Tcl integers are arbitrary precision, so the 256-bit shift is exact.
-proc decode_scan {tdo_hex} {
+# Return {done digest_hex} from the hexadecimal value returned by a full-chain
+# DR scan.  Extracts our 257-bit slot at $our_dr_offset first, then splits
+# into done (bit 0) and digest (bits 256:1).  Tcl integers are arbitrary
+# precision, so the 256-bit shift is exact.
+proc decode_scan {tdo_hex dr_offset} {
     set hex [string tolower [string trim $tdo_hex]]
     set hex [string map [list "_" "" " " "" "\n" "" "\r" "" "\t" ""] $hex]
     if {[string match "0x*" $hex]} {
@@ -78,11 +132,18 @@ proc decode_scan {tdo_hex} {
     if {![string is xdigit -strict $hex]} {
         error "scan_dr_hw_jtag returned non-hex data: $tdo_hex"
     }
-    set value  [expr "0x$hex"]
-    set done   [expr {$value & 1}]
+    set full   [expr "0x$hex"]
+    set slot   [expr {($full >> $dr_offset) & ((1 << 257) - 1)}]
+    set done   [expr {$slot & 1}]
     set mask   [expr {(1 << 256) - 1}]
-    set digest [expr {($value >> 1) & $mask}]
+    set digest [expr {($slot >> 1) & $mask}]
     return [list $done [format %064x $digest]]
+}
+
+# Compose a full-chain DR TDI word from our device's 257-bit TDI value.  Our
+# slot sits at $our_dr_offset; the extra BYPASS bits can be anything (0).
+proc make_dr_tdi {slot_val dr_offset} {
+    return [format %x [expr {$slot_val << $dr_offset}]]
 }
 
 # ---------------------------------------------------------------------------
@@ -93,8 +154,9 @@ proc decode_scan {tdo_hex} {
 set warned_not_done 0
 for {set s 0} {$s < $NSTREAMS} {incr s} {
     set next_sel [expr {$s + 1}]
-    set captured [scan_dr_hw_jtag $SHREG_W -tdi [format %x $next_sel]]
-    lassign [decode_scan $captured] done digest
+    set captured [scan_dr_hw_jtag $dr_total \
+                     -tdi [make_dr_tdi $next_sel $our_dr_offset]]
+    lassign [decode_scan $captured $our_dr_offset] done digest
     if {!$done && !$warned_not_done} {
         puts stderr "WARNING: BSCAN done bit is 0 — FPGA may not have finished.\
  Increase the after delay or check the bitstream."
@@ -104,8 +166,9 @@ for {set s 0} {$s < $NSTREAMS} {incr s} {
 }
 
 # The final stream scan committed selector NSTREAMS, so this capture is root.
-set captured [scan_dr_hw_jtag $SHREG_W -tdi 0]
-lassign [decode_scan $captured] root_done root_digest
+set captured [scan_dr_hw_jtag $dr_total \
+                 -tdi [make_dr_tdi 0 $our_dr_offset]]
+lassign [decode_scan $captured $our_dr_offset] root_done root_digest
 if {!$root_done && !$warned_not_done} {
     puts stderr "WARNING: BSCAN done bit is 0 — FPGA may not have finished.\
  Increase the after delay or check the bitstream."
