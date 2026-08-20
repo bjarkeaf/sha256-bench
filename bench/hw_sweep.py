@@ -56,6 +56,14 @@ sys.path.insert(0, str(REPO_ROOT / "bench"))
 from report_uart import parse_utilization, parse_timing, parse_block_breakdown  # noqa: E402
 
 
+def vivado(*args):
+    """Return a subprocess command list for Vivado, handling Windows .bat."""
+    cmd = ["vivado"] + list(args)
+    if sys.platform == "win32":
+        cmd = ["cmd.exe", "/c"] + cmd
+    return cmd
+
+
 # ---------------------------------------------------------------------------
 # Provenance helpers
 # ---------------------------------------------------------------------------
@@ -73,7 +81,7 @@ def get_git_sha():
 def get_vivado_version():
     try:
         r = subprocess.run(
-            ["vivado", "-version"],
+            vivado("-version"),
             capture_output=True, text=True, timeout=15,
         )
         # First line is e.g. "Vivado v2023.2 (64-bit)"
@@ -99,9 +107,9 @@ def build_bitstream(loop, force):
         print(f"  [build] LOOP={loop}: reusing existing bitstream")
         return bit
     print(f"  [build] LOOP={loop}: running vivado -mode batch -source synth/uart.tcl ...")
-    cmd = ["vivado", "-mode", "batch",
-           "-source", str(UART_TCL),
-           "-tclargs", str(loop)]
+    cmd = vivado("-mode", "batch",
+                 "-source", str(UART_TCL),
+                 "-tclargs", str(loop))
     r = subprocess.run(cmd, cwd=REPO_ROOT)
     if r.returncode != 0 or not bit.exists():
         raise RuntimeError(f"Bitstream build failed for LOOP={loop}")
@@ -116,9 +124,9 @@ def build_bscan_bitstream(loop, force):
         print(f"  [build] LOOP={loop}: reusing existing BSCAN bitstream")
         return bit
     print(f"  [build] LOOP={loop}: running vivado -mode batch -source synth/bscan.tcl ...")
-    cmd = ["vivado", "-mode", "batch",
-           "-source", str(BSCAN_TCL),
-           "-tclargs", str(loop)]
+    cmd = vivado("-mode", "batch",
+                 "-source", str(BSCAN_TCL),
+                 "-tclargs", str(loop))
     r = subprocess.run(cmd, cwd=REPO_ROOT)
     if r.returncode != 0 or not bit.exists():
         raise RuntimeError(f"BSCAN bitstream build failed for LOOP={loop}")
@@ -132,9 +140,9 @@ def read_bscan_digests(bit, nstreams):
     device and prints STREAM/ROOT lines to stdout.  Returns a list of those
     lines (same format as read_uart_digests).
     """
-    cmd = ["vivado", "-mode", "batch",
-           "-source", str(PROG_BSCAN_TCL),
-           "-tclargs", str(bit), str(nstreams)]
+    cmd = vivado("-mode", "batch",
+                 "-source", str(PROG_BSCAN_TCL),
+                 "-tclargs", str(bit), str(nstreams))
     r = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True,
                        timeout=300)
     if r.returncode != 0:
@@ -147,9 +155,9 @@ def read_bscan_digests(bit, nstreams):
 def program_bitstream(bit):
     """Flash a bitfile onto the board via Vivado hw_manager."""
     print(f"  [prog]  {bit.name}")
-    cmd = ["vivado", "-mode", "batch",
-           "-source", str(PROG_TCL),
-           "-tclargs", str(bit)]
+    cmd = vivado("-mode", "batch",
+                 "-source", str(PROG_TCL),
+                 "-tclargs", str(bit))
     r = subprocess.run(cmd, cwd=REPO_ROOT)
     if r.returncode != 0:
         raise RuntimeError(f"Programming failed for {bit}")
