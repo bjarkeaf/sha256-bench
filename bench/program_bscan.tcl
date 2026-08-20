@@ -138,16 +138,34 @@ puts [format "DR: total=%d bits, our 257-bit slot at offset %d" \
 # DR scan.  Extracts our 257-bit slot at $our_dr_offset first, then splits
 # into done (bit 0) and digest (bits 256:1).
 #
-# NOTE: We use hex constants for the masks instead of `(1 << 256) - 1`, because
-# Vivado 2026.1's Tcl `expr` computes bit shifts >64 as wide-int (silently
-# truncated to 64 bits), which turned mask_256 into 0xffffffff and threw away
-# the top 224 bits of every digest.  Written as hex literals, Tcl treats them
-# as bignums directly and the arithmetic is exact.
-set MASK_256 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-set MASK_257 0x1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+# We do all bit manipulation in binary string space instead of Tcl bignum
+# arithmetic.  Vivado 2026.1's Tcl `expr` silently truncates hex constants and
+# arithmetic to 64-bit wide-int, so `expr "0x<64-hex-char-number>"` and
+# `(1 << 256) - 1` both throw away the high bits.  Strings are safe.
+
+proc hex_to_bin {hex} {
+    set bin ""
+    foreach c [split $hex ""] {
+        set n [scan $c %x]
+        append bin [format %04b $n]
+    }
+    return $bin
+}
+
+proc bin_to_hex {bin} {
+    set r [expr {[string length $bin] % 4}]
+    if {$r != 0} {
+        set bin "[string repeat "0" [expr {4 - $r}]]$bin"
+    }
+    set hex ""
+    for {set i 0} {$i < [string length $bin]} {incr i 4} {
+        set nibble [string range $bin $i [expr {$i+3}]]
+        append hex [format %x [scan $nibble %b]]
+    }
+    return $hex
+}
 
 proc decode_scan {tdo_hex dr_offset} {
-    global MASK_256 MASK_257
     set hex [string tolower [string trim $tdo_hex]]
     set hex [string map [list "_" "" " " "" "\n" "" "\r" "" "\t" ""] $hex]
     if {[string match "0x*" $hex]} {
@@ -156,15 +174,38 @@ proc decode_scan {tdo_hex dr_offset} {
     if {![string is xdigit -strict $hex]} {
         error "scan_dr_hw_jtag returned non-hex data: $tdo_hex"
     }
-    set full   [expr "0x$hex"]
-    set slot   [expr {($full >> $dr_offset) & $MASK_257}]
-    set done   [expr {$slot & 1}]
-    set digest [expr {($slot >> 1) & $MASK_256}]
-    return [list $done [format %064x $digest]]
+    # Binary MSB-first.  Bit i of the value = char at index (nbits-1-i).
+    set bin   [hex_to_bin $hex]
+    set nbits [string length $bin]
+    # 257-bit slot starting at bit dr_offset:
+    #   bit  0 = char index nbits - 1 - dr_offset
+    #   bit 256 = char index nbits - 257 - dr_offset
+    set end   [expr {$nbits - 1 - $dr_offset}]
+    set start [expr {$end - 256}]
+    if {$start < 0} {
+        # Pad on the left with zeros if the slot extends past the returned data.
+        set slot_bin [string repeat "0" [expr {-$start}]]
+        append slot_bin [string range $bin 0 $end]
+    } else {
+        set slot_bin [string range $bin $start $end]
+    }
+    # slot_bin is 257 chars MSB-first; last char is bit 0 (done).
+    set done       [string index $slot_bin end]
+    set digest_bin [string range $slot_bin 0 end-1]
+    # Pad to 256 bits (should already be 256).
+    while {[string length $digest_bin] < 256} {
+        set digest_bin "0$digest_bin"
+    }
+    set digest_hex [bin_to_hex $digest_bin]
+    while {[string length $digest_hex] < 64} {
+        set digest_hex "0$digest_hex"
+    }
+    return [list $done $digest_hex]
 }
 
-# Compose a full-chain DR TDI word from our device's 257-bit TDI value.  Our
-# slot sits at $our_dr_offset; the extra BYPASS bits can be anything (0).
+# Compose a full-chain DR TDI word from our device's small integer TDI value
+# (the selector).  Our slot sits at $our_dr_offset; the extra BYPASS bits
+# above are zero.  The selector is <256, so a plain expr shift is safe here.
 proc make_dr_tdi {slot_val dr_offset} {
     return [format %x [expr {$slot_val << $dr_offset}]]
 }
