@@ -5,12 +5,18 @@
 # Usage:
 #   vivado -mode batch -source synth/uart.tcl -tclargs <LOOP>
 #
-# LOOP must be one of {1, 2, 4, 8, 16, 32} (divisor of 64). Defaults to 1.
+# LOOP must be one of {1, 2, 4, 8, 16, 32, 64} (divisor of 64). Defaults to 1.
 #
 # Outputs (in ./vivado_uart_L${LOOP}/):
 #   sha256_stream_uart_top.bit  - flash to the Pynq-Z2 via Vivado Hardware Manager
-#   util.rpt                    - final LUT/FF/BRAM/DSP utilization
-#   timing.rpt                  - timing summary (WNS/TNS on sys_clk)
+#   util.rpt                    - total LUT/FF/BRAM/DSP utilization
+#   util_hier.rpt               - full hierarchical breakdown
+#   util_core.rpt               - just sha256_transform (compression core)
+#   util_uart.rpt               - just uart_tx
+#   util_state_ram.rpt          - all state_ram register cells
+#   util_lfsr.rpt               - all lfsr register cells
+#   util_divider.rpt            - just clk_div2
+#   timing.rpt                  - timing summary (WNS/TNS on clk_div2)
 
 set LOOP [expr {[llength $argv] > 0 ? [lindex $argv 0] : 1}]
 if {[lsearch {1 2 4 8 16 32 64} $LOOP] < 0} {
@@ -48,6 +54,39 @@ route_design
 report_utilization    -file "$OUTDIR/util.rpt"
 report_utilization    -file "$OUTDIR/util_hier.rpt" -hierarchical
 report_timing_summary -file "$OUTDIR/timing.rpt" -max_paths 10
+
+# Per-functional-block breakdowns. Each report contains only the LUT/FF used
+# by cells matching a specific filter, so bench/report_uart.py can attribute
+# area to compression core vs. state RAM vs. LFSR vs. UART, and derive
+# "everything else" as (total − sum). If a cell is optimised away or renamed
+# the corresponding file may end up empty; the parser tolerates that.
+foreach {label filter} {
+    core      {module_hier uut/core}
+    uart      {module_hier tx}
+    state_ram {name        *state_ram*}
+    lfsr      {name        *lfsr*}
+    divider   {module_hier divider}
+} {
+    set kind  [lindex $filter 0]
+    set match [lindex $filter 1]
+    set path  "$OUTDIR/util_$label.rpt"
+    if {[catch {
+        if {$kind eq "module_hier"} {
+            set cells [get_cells $match]
+        } else {
+            set cells [get_cells -hierarchical -filter "NAME =~ \"$match\""]
+        }
+        if {[llength $cells] > 0} {
+            report_utilization -cells $cells -file $path
+        } else {
+            # Write an empty file so the parser can distinguish "no match" from
+            # "report step skipped."
+            close [open $path w]
+        }
+    } err]} {
+        puts "WARNING: util_$label breakdown failed: $err"
+    }
+}
 
 write_bitstream -force "$OUTDIR/sha256_stream_uart_top.bit"
 

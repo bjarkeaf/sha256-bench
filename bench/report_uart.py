@@ -84,14 +84,56 @@ def parse_timing(path):
     return {"wns_ns": wns, "tns_ns": tns}
 
 
+def parse_block_breakdown(outdir):
+    """Parse the per-functional-block util reports written by synth/uart.tcl.
+
+    Reads {util,util_core,util_uart,util_state_ram,util_lfsr,util_divider}.rpt
+    from `outdir` and returns a dict keyed by block name with `lut` and `ff`
+    subfields. Missing / empty files → zero. Derives a synthetic `rest` bucket
+    = total − (core + uart + state_ram + lfsr + divider) so all rows sum to
+    the total.
+    """
+    import os
+    def _read(name, key):
+        path = os.path.join(outdir, name)
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return 0
+        val = parse_utilization(path).get(key)
+        return val if val is not None else 0
+
+    blocks = ["core", "uart", "state_ram", "lfsr", "divider"]
+    out = {}
+    for block in blocks:
+        out[block] = {
+            "lut": _read(f"util_{block}.rpt", "lut"),
+            "ff":  _read(f"util_{block}.rpt", "ff"),
+        }
+    total = {
+        "lut": _read("util.rpt", "lut"),
+        "ff":  _read("util.rpt", "ff"),
+    }
+    out["total"] = total
+    out["rest"] = {
+        "lut": max(0, total["lut"] - sum(out[b]["lut"] for b in blocks)),
+        "ff":  max(0, total["ff"]  - sum(out[b]["ff"]  for b in blocks)),
+    }
+    return out
+
+
 if __name__ == "__main__":
-    # Quick smoke-test entry point: `python3 bench/report_uart.py <util.rpt> <timing.rpt>`
+    # Quick smoke-test entry point.
     import json
     import sys
-    if len(sys.argv) != 3:
-        print("Usage: report_uart.py <util.rpt> <timing.rpt>", file=sys.stderr)
+    if len(sys.argv) == 3:
+        print(json.dumps({
+            "utilization": parse_utilization(sys.argv[1]),
+            "timing":      parse_timing(sys.argv[2]),
+        }, indent=2))
+    elif len(sys.argv) == 2:
+        print(json.dumps({
+            "breakdown": parse_block_breakdown(sys.argv[1]),
+        }, indent=2))
+    else:
+        print("Usage: report_uart.py <util.rpt> <timing.rpt>\n"
+              "   or: report_uart.py <vivado_uart_L*/>", file=sys.stderr)
         sys.exit(2)
-    print(json.dumps({
-        "utilization": parse_utilization(sys.argv[1]),
-        "timing":      parse_timing(sys.argv[2]),
-    }, indent=2))

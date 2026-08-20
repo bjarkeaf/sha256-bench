@@ -52,7 +52,7 @@ REF_PY    = REPO_ROOT / "sim"   / "ref_stream.py"
 CSV_PATH  = REPO_ROOT / "results_hw_sweep.csv"
 
 sys.path.insert(0, str(REPO_ROOT / "bench"))
-from report_uart import parse_utilization, parse_timing  # noqa: E402
+from report_uart import parse_utilization, parse_timing, parse_block_breakdown  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +188,14 @@ def diff_digests(rtl_lines, ref_lines, nstreams):
 CSV_FIELDS = [
     "loop", "nstreams",
     "lut", "ff", "bram_36k", "dsp",
+    # Per-functional-block breakdown (see synth/uart.tcl for how each is defined;
+    # `rest` is the derived bucket = total minus all the named blocks).
+    "lut_core",      "ff_core",
+    "lut_uart",      "ff_uart",
+    "lut_state_ram", "ff_state_ram",
+    "lut_lfsr",      "ff_lfsr",
+    "lut_divider",   "ff_divider",
+    "lut_rest",      "ff_rest",
     "wns_ns", "tns_ns", "target_period_ns", "fmax_mhz", "throughput_gbps",
     "ref_match", "root_match", "streams_matched",
     "git_sha", "timestamp_utc", "vivado_version", "elapsed_s",
@@ -213,8 +221,9 @@ def run_one(loop, args, provenance):
 
     bit = build_bitstream(loop, args.rebuild)
 
-    util = parse_utilization(str(outdir / "util.rpt"))
-    tim  = parse_timing(str(outdir / "timing.rpt"))
+    util  = parse_utilization(str(outdir / "util.rpt"))
+    tim   = parse_timing(str(outdir / "timing.rpt"))
+    blocks = parse_block_breakdown(str(outdir))
 
     # The design runs on a BUFG /2 divider from the 125 MHz onboard clock,
     # so the constrained clock (clk_div2) has a 16 ns target period.
@@ -250,6 +259,18 @@ def run_one(loop, args, provenance):
         "ff":               util["ff"],
         "bram_36k":         util["bram_36k"],
         "dsp":              util["dsp"],
+        "lut_core":         blocks["core"]["lut"],
+        "ff_core":          blocks["core"]["ff"],
+        "lut_uart":         blocks["uart"]["lut"],
+        "ff_uart":          blocks["uart"]["ff"],
+        "lut_state_ram":    blocks["state_ram"]["lut"],
+        "ff_state_ram":     blocks["state_ram"]["ff"],
+        "lut_lfsr":         blocks["lfsr"]["lut"],
+        "ff_lfsr":          blocks["lfsr"]["ff"],
+        "lut_divider":      blocks["divider"]["lut"],
+        "ff_divider":       blocks["divider"]["ff"],
+        "lut_rest":         blocks["rest"]["lut"],
+        "ff_rest":          blocks["rest"]["ff"],
         "wns_ns":           tim["wns_ns"],
         "tns_ns":           tim["tns_ns"],
         "target_period_ns": target_period,
