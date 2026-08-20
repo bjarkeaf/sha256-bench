@@ -132,11 +132,27 @@ Runs the whole `LOOP` sweep on the actual FPGA and compares each result to
 its Python golden. Also captures LUT/FF/BRAM/DSP area, WNS/TNS timing, and
 projected throughput per LOOP into a CSV for post-hoc plotting.
 
-Wire up: PMOD JA1 (pin 1 of the top PMOD header, Y18) → USB-UART TX pin; a
-PMOD GND to USB-UART GND. Plug the USB-UART into the laptop; note its
-device (`/dev/ttyUSB1` on Linux, something like `COM6` on Windows). The
-Pynq-Z2's onboard USB-UART is on the PS side and **is not** what the sweep
-uses.
+Two readback modes — pick whichever applies:
+
+### Option A: BSCAN (single USB cable, no extra hardware)
+
+Reads digests back over the same JTAG connection used for programming, via
+the `BSCANE2` USER1 scan chain. `bench/program_bscan.tcl` programs the board
+and calls `scan_dr_hw_jtag` to shift out all digests in one pass.
+
+```sh
+cd sha256-bench
+python3 bench/hw_sweep.py --bscan
+```
+
+If `scan_dr_hw_jtag` is not found (older Vivado), it will error immediately
+with "invalid command name" — fall back to Option B.
+
+### Option B: PMOD UART (requires a USB-UART adapter)
+
+Wire PMOD JA1 (pin 1 of the top PMOD header, Y18) → adapter RX; a PMOD GND
+→ adapter GND. The Pynq-Z2's onboard USB-UART is on the PS side and **is
+not** what this uses.
 
 ```sh
 cd sha256-bench
