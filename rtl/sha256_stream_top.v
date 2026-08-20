@@ -73,13 +73,23 @@ module sha256_stream_top #(
     // Total slot index = cyc mod (LATENCY = NSTREAMS * LOOP):
     //   cnt = cyc mod LOOP        — 0 on block-entry cycles, 1..LOOP-1 on feedback cycles
     //   sid = (cyc / LOOP) mod NSTREAMS
-    // Both are just bit-slices because NSTREAMS and LOOP are powers of 2.
+    // Both are bit-slices because NSTREAMS and LOOP are powers of 2.
+    //
+    // Three special cases (see the localparam guards above for the width
+    // fallback that kicks in when a computed index would be zero):
+    //   NSTREAMS == 1 (LOOP=64) — sid is always 0; cnt cycles 0..63.
+    //   LOOP     == 1           — cnt is always 0; sid cycles 0..63.
+    //   otherwise               — both cycle.
     // -----------------------------------------------------------------------
     wire [5:0]         cnt;
     wire [SID_W-1:0]   sid;
     wire               cnt_zero;
     generate
-        if (LOOP == 1) begin : G_LOOP1
+        if (NSTREAMS == 1) begin : G_NS1
+            assign cnt      = {{(6-CNT_W){1'b0}}, cyc[CNT_W-1:0]};
+            assign sid      = {SID_W{1'b0}};
+            assign cnt_zero = (cyc[CNT_W-1:0] == {CNT_W{1'b0}});
+        end else if (LOOP == 1) begin : G_LOOP1
             assign cnt      = 6'd0;
             assign sid      = cyc[SID_W-1:0];
             assign cnt_zero = 1'b1;

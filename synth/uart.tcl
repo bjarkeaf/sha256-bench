@@ -13,8 +13,8 @@
 #   timing.rpt                  - timing summary (WNS/TNS on sys_clk)
 
 set LOOP [expr {[llength $argv] > 0 ? [lindex $argv 0] : 1}]
-if {[lsearch {1 2 4 8 16 32} $LOOP] < 0} {
-    error "LOOP=$LOOP not in {1,2,4,8,16,32}"
+if {[lsearch {1 2 4 8 16 32 64} $LOOP] < 0} {
+    error "LOOP=$LOOP not in {1,2,4,8,16,32,64}"
 }
 
 set OUTDIR "vivado_uart_L${LOOP}"
@@ -28,6 +28,7 @@ set XDC     [file normalize [file join [file dirname [info script]] "uart.xdc"]]
 read_verilog "$RTL_DIR/sha256_functions.v"
 read_verilog "$RTL_DIR/sha256_transform.v"
 read_verilog "$RTL_DIR/sha256_stream_top.v"
+read_verilog "$RTL_DIR/clk_div2.v"
 read_verilog "$RTL_DIR/uart_tx.v"
 read_verilog "$RTL_DIR/sha256_stream_uart_top.v"
 read_xdc     $XDC

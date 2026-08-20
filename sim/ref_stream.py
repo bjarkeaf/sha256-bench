@@ -24,8 +24,8 @@ import struct
 import sys
 
 LOOP = int(os.environ.get("LOOP", "1"))
-if LOOP not in (1, 2, 4, 8, 16, 32):
-    sys.stderr.write(f"ERROR: LOOP={LOOP} not in {{1,2,4,8,16,32}}\n")
+if LOOP not in (1, 2, 4, 8, 16, 32, 64):
+    sys.stderr.write(f"ERROR: LOOP={LOOP} not in {{1,2,4,8,16,32,64}}\n")
     sys.exit(2)
 
 NSTREAMS = 64 // LOOP

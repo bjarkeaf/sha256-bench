@@ -42,7 +42,7 @@ except ImportError:
     sys.exit(2)
 
 # The plan's canonical LOOP set (divisors of 64).
-LEGAL_LOOPS = [1, 2, 4, 8, 16, 32]
+LEGAL_LOOPS = [1, 2, 4, 8, 16, 32, 64]
 
 # Repo layout (paths resolved relative to the repo root, which we cd into).
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -216,7 +216,9 @@ def run_one(loop, args, provenance):
     util = parse_utilization(str(outdir / "util.rpt"))
     tim  = parse_timing(str(outdir / "timing.rpt"))
 
-    target_period = 8.0
+    # The design runs on a BUFG /2 divider from the 125 MHz onboard clock,
+    # so the constrained clock (clk_div2) has a 16 ns target period.
+    target_period = 16.0
     fmax = throughput = None
     if tim["wns_ns"] is not None:
         achieved_period = target_period - tim["wns_ns"]
@@ -272,7 +274,7 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     p.add_argument("--port", required=True,
                    help="serial port (e.g. /dev/ttyUSB1 on Linux, COM6 on Windows)")
-    p.add_argument("--loops", default="1,2,4,8,16,32",
+    p.add_argument("--loops", default="1,2,4,8,16,32,64",
                    help="comma-separated LOOP values to sweep")
     p.add_argument("--rebuild", action="store_true",
                    help="rebuild bitstreams even if they already exist")

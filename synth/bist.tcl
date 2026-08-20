@@ -7,8 +7,7 @@
 # Outputs (in ./vivado_bist/):
 #   sha256_stream_bist_top.bit  - flash to the Pynq-Z2 via Vivado Hardware Manager
 #   util.rpt                    - final LUT/FF utilization
-#   timing.rpt                  - timing summary (WNS should be well positive
-#                                 at 125 MHz; SHA-256 LOOP=1 hits ~400 MHz)
+#   timing.rpt                  - timing summary (WNS on clk_div2 = 62.5 MHz)
 
 set OUTDIR "vivado_bist"
 file mkdir $OUTDIR
@@ -21,6 +20,7 @@ set XDC     [file normalize [file join [file dirname [info script]] "bist.xdc"]]
 read_verilog "$RTL_DIR/sha256_functions.v"
 read_verilog "$RTL_DIR/sha256_transform.v"
 read_verilog "$RTL_DIR/sha256_stream_top.v"
+read_verilog "$RTL_DIR/clk_div2.v"
 read_verilog "$RTL_DIR/sha256_stream_bist_top.v"
 read_xdc     $XDC
 

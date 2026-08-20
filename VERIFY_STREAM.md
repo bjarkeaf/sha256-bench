@@ -16,7 +16,17 @@ stream. XOR of the `NSTREAMS` digests is the placeholder "root".
 `sim/ref_stream.py` (bespoke) and `sim/ref_stream_lib.py` (uses
 `cloudtools/sha256`) each compute the exact same sequence in software.
 Passing = RTL digests match either reference bit-for-bit for every legal
-`LOOP ∈ {1, 2, 4, 8, 16, 32}`.
+`LOOP ∈ {1, 2, 4, 8, 16, 32, 64}`.
+
+**Clocking**: the streaming wrapper's chain-add path (state RAM mux → adder
+→ SHA core `rx_state`) caps at ~75 MHz on this Zynq-7020 speedgrade. The
+board wrappers therefore run on a 62.5 MHz `clk_div2` (BUFG /2 divider off
+the 125 MHz onboard oscillator; see `rtl/clk_div2.v`). Throughput ≈
+`512 × 62.5 / LOOP` Mbps at Fmax — LOOP=1 caps at ~32 Gbps single-core,
+LOOP=64 stays at ~0.5 Gbps but exercises the same scheduler. If you need
+the compression core's real 400 MHz throughput number, use `synth/ooc.tcl`
+(bench_top OOC) — it measures the core in isolation, without the scheduler
+overhead.
 
 ## Files that were added or touched
 
@@ -38,8 +48,10 @@ HW side, single-vector smoke test (LED BIST, unchanged from earlier commit):
 - `rtl/sha256_stream_bist_top.v`, `synth/bist.tcl`, `synth/bist.xdc`.
 
 HW side, full sweep (Parts B and C):
-- `rtl/uart_tx.v` — standard 8N1 UART TX at 115200 baud from the 125 MHz
-  onboard clock.
+- `rtl/clk_div2.v` — BUFG /2 divider used by both board wrappers to bring
+  125 MHz down to 62.5 MHz for the design.
+- `rtl/uart_tx.v` — standard 8N1 UART TX at 115200 baud from the 62.5 MHz
+  divided clock.
 - `rtl/sha256_stream_uart_top.v` — parametric `#(parameter LOOP=1)` wrapper
   that streams `NSTREAMS` STREAM lines + 1 ROOT line via the UART after
   `done` rises. Self-clearing reset, alive+done LEDs.
@@ -74,7 +86,7 @@ make check-stream-sweep
 Expected final line:
 
 ```
-PASS check-stream-sweep: all 6 LOOP values match
+PASS check-stream-sweep: all 7 LOOP values match
 ```
 
 If it fails, each per-LOOP failure prints the first 20 lines of `diff` for
@@ -139,12 +151,22 @@ regeneration).
 Expected end-of-run summary (also written to `results_hw_sweep.csv`):
 
 ```
-LOOP  NSTR     LUT      FF  BRAM  DSP    Fmax    Gbps    REF   ROOT      STR    t(s)
-   1    64  ~13000  ~35000     0    0   ~400    ~200   PASS   PASS   64/64   ~30
-   2    32   ~8000  ~19000     0    0   ~400    ~100   PASS   PASS   32/32   ~25
+LOOP  NSTR    LUT      FF  BRAM  DSP    Fmax    Gbps    REF   ROOT     STR    t(s)
+   1    64   ...     ...    ...  ...    ...     ...    PASS  PASS   64/64   ~30
    ...
-  32     2   ~1000   ~4000     0    0   ~400     ~6    PASS   PASS    2/2    ~20
+  64     1   ...     ...    ...  ...    ...     ...    PASS  PASS    1/1    ~15
 ```
+
+Actual numbers land wherever P&R lands them; the point is that all seven
+rows should be PASS. Fmax in this table is the clk_div2 Fmax from
+`report_timing_summary` (16 ns target − WNS), and throughput is
+`512 × Fmax / LOOP / 1000` Gbps. LOOP=1 was seen to have WNS ≈ −5.2 ns at
+an 8 ns target on the earlier attempt; with the 16 ns target we expect
+positive WNS everywhere.
+
+For the compression core's real 400 MHz Fmax (independent of scheduler
+overhead), use `synth/ooc.tcl` and `results.csv` — that flow already
+measures it.
 
 CSV columns (in order): `loop, nstreams, lut, ff, bram_36k, dsp, wns_ns,
 tns_ns, target_period_ns, fmax_mhz, throughput_gbps, ref_match, root_match,

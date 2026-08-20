@@ -57,7 +57,8 @@ plus an XOR-reduce root.
 cd sim
 make check-stream                 # LOOP=1 by default (64 streams)
 make check-stream LOOP=8          # 8 streams via a 64/8=8-stage pipeline
-make check-stream-sweep           # all 6 LOOP values back-to-back
+make check-stream LOOP=64         # fully rolled: 1 stream, 1 stage, 64 rounds per block
+make check-stream-sweep           # all 7 LOOP values back-to-back
 make check-stream-lib             # RTL vs library-based ref (pip install sha256)
 make check-stream-all             # three-way: RTL vs both refs vs each other
 ```

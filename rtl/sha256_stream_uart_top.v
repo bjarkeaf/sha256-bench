@@ -41,11 +41,20 @@ module sha256_stream_uart_top #(
     localparam integer LINE_LEN   = PREFIX_LEN + HEX_LEN + TAIL_LEN;      // 78
 
     // -----------------------------------------------------------------------
-    // Self-clearing reset
+    // Divide the 125 MHz onboard clock down to 62.5 MHz. The streaming
+    // wrapper's chain-add path (state_ram mux + adder feeding the SHA core)
+    // caps at ~75 MHz on this device, so we run below that with margin. See
+    // rtl/clk_div2.v for the BUFG-fed toggle divider.
+    // -----------------------------------------------------------------------
+    wire clk_div;
+    clk_div2 divider (.clk_in(clk), .clk_out(clk_div));
+
+    // -----------------------------------------------------------------------
+    // Self-clearing reset, on the divided clock
     // -----------------------------------------------------------------------
     reg [7:0] rst_cnt = 8'd0;
     wire rst = ~rst_cnt[7];
-    always @(posedge clk)
+    always @(posedge clk_div)
         if (!rst_cnt[7]) rst_cnt <= rst_cnt + 8'd1;
 
     // -----------------------------------------------------------------------
@@ -56,7 +65,7 @@ module sha256_stream_uart_top #(
     wire [NSTREAMS*256-1:0] stream_digests_flat;
 
     sha256_stream_top #(.LOOP(LOOP)) uut (
-        .clk                 (clk),
+        .clk                 (clk_div),
         .rst                 (rst),
         .done                (done),
         .root_digest         (root_digest),
@@ -139,7 +148,7 @@ module sha256_stream_uart_top #(
     wire byte_valid    = done & ~finished;
     wire byte_accepted = byte_valid & uart_ready;
 
-    always @(posedge clk) begin
+    always @(posedge clk_div) begin
         if (rst) begin
             record_idx <= {RIDX_W{1'b0}};
             byte_pos   <= {BPOS_W{1'b0}};
@@ -155,8 +164,8 @@ module sha256_stream_uart_top #(
         end
     end
 
-    uart_tx #(.CLK_HZ(125_000_000), .BAUD(115_200)) tx (
-        .clk       (clk),
+    uart_tx #(.CLK_HZ(62_500_000), .BAUD(115_200)) tx (
+        .clk       (clk_div),
         .rst       (rst),
         .tx_data   (byte_out),
         .tx_valid  (byte_valid),
@@ -165,12 +174,12 @@ module sha256_stream_uart_top #(
     );
 
     // -----------------------------------------------------------------------
-    // LEDs
+    // LEDs (heartbeat on the divided clock; alive LED blinks ~0.5 Hz)
     // -----------------------------------------------------------------------
     reg [26:0] hb = 27'd0;
-    always @(posedge clk) hb <= hb + 27'd1;
+    always @(posedge clk_div) hb <= hb + 27'd1;
 
-    assign led_alive = hb[26];
+    assign led_alive = hb[25];
     assign led_done  = done;
 
 endmodule

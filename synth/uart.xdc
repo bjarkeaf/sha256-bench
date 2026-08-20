@@ -8,6 +8,14 @@
 set_property -dict {PACKAGE_PIN H16 IOSTANDARD LVCMOS33} [get_ports clk]
 create_clock -name sys_clk -period 8.000 -waveform {0.000 4.000} [get_ports clk]
 
+# The design runs on a BUFG-driven /2 divider (see rtl/clk_div2.v) so all
+# downstream sequential logic is on a 62.5 MHz clock. Declaring the generated
+# clock explicitly makes STA report the achieved Fmax on the divided domain.
+create_generated_clock -name clk_div2                    \
+                       -source [get_ports clk]           \
+                       -divide_by 2                      \
+                       [get_pins divider/bufg_inst/O]
+
 # PMOD JA1 = UART TX from the FPGA to the laptop's USB-UART adapter.
 # Pynq-Z2 PMOD JA pins are on bank 34 (LVCMOS33).
 #   JA1 = Y18

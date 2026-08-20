@@ -4,9 +4,9 @@ N_CORES ?= 1
 # Guard: LOOP must be a divisor of 64 for the streaming scheduler to make sense
 # (NSTREAMS = 64/LOOP must be a positive integer, and the pipeline invariant
 # NSTREAMS*LOOP = 64 assumes both are powers of 2).
-_VALID_LOOP := $(filter 1 2 4 8 16 32,$(LOOP))
+_VALID_LOOP := $(filter 1 2 4 8 16 32 64,$(LOOP))
 ifneq ($(LOOP),$(_VALID_LOOP))
-$(error LOOP=$(LOOP) not in {1,2,4,8,16,32})
+$(error LOOP=$(LOOP) not in {1,2,4,8,16,32,64})
 endif
 
 RTL = ../rtl/sha256_functions.v ../rtl/sha256_transform.v ../rtl/bench_top.v
@@ -84,13 +84,13 @@ check-stream-all: sim-stream ref_stream.py ref_stream_lib.py
 # Note: runs recursively so each iteration picks up its own LOOP=X.
 check-stream-sweep:
 	@ok=1; \
-	for L in 1 2 4 8 16 32; do \
+	for L in 1 2 4 8 16 32 64; do \
 		echo "--- LOOP=$$L ---"; \
 		$(MAKE) --no-print-directory check-stream LOOP=$$L || ok=0; \
 	done; \
 	echo "==============="; \
 	if [ $$ok -eq 1 ]; then \
-		echo "PASS check-stream-sweep: all 6 LOOP values match"; \
+		echo "PASS check-stream-sweep: all 7 LOOP values match"; \
 	else \
 		echo "FAIL check-stream-sweep: at least one LOOP value mismatched"; \
 		exit 1; \
