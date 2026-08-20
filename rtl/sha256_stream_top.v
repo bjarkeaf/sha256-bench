@@ -1,31 +1,37 @@
 `timescale 1ns/1ps
 
-// Time-multiplexed SHA-256 chaining pipeline (single core).
+// Time-multiplexed SHA-256 chaining pipeline (single core), parametric on LOOP.
 //
 // Implements Peter's BOTEC scheme (../peter-sha256-botec.md), scaled down to
-// one pipelined core:
+// one pipelined core with the same LOOP knob as bench_top:
 //
-//   - NSTREAMS=64 independent hash chains, round-robined through a fully-
-//     pipelined SHA-256 compression core (LOOP=1, 64-cycle latency).
-//   - Each stream chains PACKETS_PER_STREAM=100 blocks; final digest per
-//     stream = H after 100 blocks.
-//   - After all blocks are processed, output ROOT = XOR-reduce of the 64 stream
-//     digests. (Placeholder for the "one more SHA core combines them" step in
-//     the BOTEC. XOR is enough to exercise the pipeline; it can be replaced
-//     later with a real SHA-256 tree without changing the scheduler.)
+//   - LOOP ∈ {1, 2, 4, 8, 16, 32} (must divide 64 evenly). Sets the unroll
+//     factor of the SHA-256 core: 64/LOOP stages, each block passes through
+//     the pipeline LOOP times via the internal `feedback` path. Throughput
+//     is 1 block per LOOP cycles; latency stays 64 cycles for any LOOP.
+//   - NSTREAMS = 64/LOOP independent hash chains, round-robined through the
+//     core. Chosen so that the round-robin invariant NSTREAMS × LOOP = 64
+//     holds — a block written back for stream `sid` at cycle T aligns with
+//     that same stream's next block entering at cycle T.
+//   - Each stream chains BLOCKS_PER_STREAM=100 blocks; final digest per
+//     stream = H after 100 blocks. Runtime is TOTAL_BLOCKS×LOOP = 6400
+//     cycles regardless of LOOP.
+//   - After all blocks are processed, output ROOT = XOR-reduce of the
+//     NSTREAMS stream digests. Placeholder for the "one more SHA core
+//     combines them" step in the BOTEC.
 //
-// Chaining is done *externally* to sha256_transform: we read the last
-// digester's registered state via tx_state_final, add the per-stream rx_state
-// ourselves, write the result back to the state RAM, and forward it as the
-// next block's rx_state. Because the pipeline is exactly 64 cycles deep and
-// we have exactly 64 streams round-robining, the writeback slot for stream i
-// always coincides with the read slot for stream i's next block.
+// Chaining is done *externally* to sha256_transform via the tx_state_final
+// tap (the last digester stage's registered output), skipping the +1 cycle
+// tx_hash output register. External chain-add: new_H = old_H + tx_state_final
+// with per-stream old_H read from state_ram.
 //
-// Input blocks come from 8 parallel 64-bit Fibonacci LFSRs, forming a single
-// deterministic 512-bit-per-cycle sequence. The Python reference
-// (sim/ref_stream.py) mirrors this exactly.
+// Input blocks come from 8 parallel 64-bit Fibonacci LFSRs. The LFSR
+// advances only on block-entry cycles (cnt==0), so the block sequence is
+// identical to the Python reference regardless of LOOP.
 
-module sha256_stream_top (
+module sha256_stream_top #(
+    parameter integer LOOP = 1
+) (
     input  wire         clk,
     input  wire         rst,
 
@@ -33,15 +39,18 @@ module sha256_stream_top (
     output reg          done,
     output reg  [255:0] root_digest,
 
-    // Flat concatenation of the 64 stream digests, stream 0 at bits[255:0],
-    // stream 63 at bits[64*256-1:63*256]. Valid alongside `done`.
-    output wire [64*256-1:0] stream_digests_flat
+    // Flat concatenation of the NSTREAMS stream digests, stream 0 at
+    // bits[255:0], stream (NSTREAMS-1) at bits[NSTREAMS*256-1 : (NSTREAMS-1)*256].
+    // Valid alongside `done`.
+    output wire [(64/LOOP)*256-1:0] stream_digests_flat
 );
-    localparam integer NSTREAMS           = 64;
-    localparam integer PACKETS_PER_STREAM = 100;
-    localparam integer TOTAL_BLOCKS       = NSTREAMS * PACKETS_PER_STREAM; // 6400
-    localparam integer LATENCY            = 64;                            // fully-unrolled SHA-256
-    localparam integer DRAIN_END          = TOTAL_BLOCKS + LATENCY;        // 6464
+    localparam integer NSTREAMS          = 64 / LOOP;
+    localparam integer BLOCKS_PER_STREAM = 100;
+    localparam integer TOTAL_BLOCKS      = NSTREAMS * BLOCKS_PER_STREAM;
+    localparam integer LATENCY           = 64;                                // pipeline latency, LOOP-invariant
+    localparam integer DRAIN_END         = TOTAL_BLOCKS * LOOP + LATENCY;     // = 6464 for all legal LOOP
+    localparam integer SID_W             = (NSTREAMS <= 1) ? 1 : $clog2(NSTREAMS);
+    localparam integer CNT_W             = (LOOP     <= 1) ? 1 : $clog2(LOOP);
 
     // SHA-256 initial hash values, packed {h,g,f,e,d,c,b,a} with a at bits[31:0].
     localparam [255:0] SHA256_IV = {
@@ -50,27 +59,50 @@ module sha256_stream_top (
     };
 
     // -----------------------------------------------------------------------
-    // Global cycle counter (also drives round-robin stream id)
+    // Global cycle counter
     // -----------------------------------------------------------------------
     reg [15:0] cyc;
     always @(posedge clk) begin
-        if (rst)                    cyc <= 16'd0;
-        else if (cyc < DRAIN_END)   cyc <= cyc + 16'd1;
+        if (rst)                  cyc <= 16'd0;
+        else if (cyc < DRAIN_END) cyc <= cyc + 16'd1;
     end
 
-    // Round-robin stream id: at cycle T, stream_id = T mod 64.
-    // Because LATENCY == NSTREAMS, the block exiting the pipeline at cycle T
-    // belongs to the same stream as the block entering at cycle T.
-    wire [5:0] sid = cyc[5:0];
+    // -----------------------------------------------------------------------
+    // Sub-block counter (cnt) and round-robin stream id (sid)
+    //
+    // Total slot index = cyc mod (LATENCY = NSTREAMS * LOOP):
+    //   cnt = cyc mod LOOP        — 0 on block-entry cycles, 1..LOOP-1 on feedback cycles
+    //   sid = (cyc / LOOP) mod NSTREAMS
+    // Both are just bit-slices because NSTREAMS and LOOP are powers of 2.
+    // -----------------------------------------------------------------------
+    wire [5:0]         cnt;
+    wire [SID_W-1:0]   sid;
+    wire               cnt_zero;
+    generate
+        if (LOOP == 1) begin : G_LOOP1
+            assign cnt      = 6'd0;
+            assign sid      = cyc[SID_W-1:0];
+            assign cnt_zero = 1'b1;
+        end else begin : G_LOOPN
+            assign cnt      = {{(6-CNT_W){1'b0}}, cyc[CNT_W-1:0]};
+            assign sid      = cyc[SID_W+CNT_W-1 : CNT_W];
+            assign cnt_zero = (cyc[CNT_W-1:0] == {CNT_W{1'b0}});
+        end
+    endgenerate
 
     // Pipeline output valid = we've been running long enough for the first
-    // block to have propagated end-to-end.
+    // block to have propagated end-to-end. LATENCY=64 for any LOOP.
     wire pipe_valid = (cyc >= LATENCY);
+
+    // sha256_transform's `feedback` input: high on cnt!=0 cycles.
+    wire feedback = ~cnt_zero;
 
     // -----------------------------------------------------------------------
     // PRNG: 8 independent 64-bit Fibonacci LFSRs
     //   poly x^64 + x^63 + x^61 + x^60 + 1, shift-left, feedback into LSB.
     //   Distinct non-zero seeds; Python reference must match bit-for-bit.
+    // LFSR advances only on block-entry cycles (cnt==0) so the block
+    // sequence is independent of LOOP.
     // -----------------------------------------------------------------------
     reg [63:0] lfsr [0:7];
     integer li;
@@ -84,7 +116,7 @@ module sha256_stream_top (
             lfsr[5] <= 64'h1234567890abcdef;
             lfsr[6] <= 64'hf00dfacef00dface;
             lfsr[7] <= 64'h13579bdf2468ace0;
-        end else begin
+        end else if (cnt_zero) begin
             for (li = 0; li < 8; li = li + 1)
                 lfsr[li] <= {lfsr[li][62:0],
                              lfsr[li][63] ^ lfsr[li][62] ^ lfsr[li][60] ^ lfsr[li][59]};
@@ -96,22 +128,18 @@ module sha256_stream_top (
                                 lfsr[3], lfsr[2], lfsr[1], lfsr[0]};
 
     // -----------------------------------------------------------------------
-    // Per-stream state RAM (64 x 256 bits), initialised to IV on reset.
+    // Per-stream state RAM (NSTREAMS x 256 bits), initialised to IV on reset.
     // -----------------------------------------------------------------------
-    reg [255:0] state_ram [0:63];
+    reg [255:0] state_ram [0:NSTREAMS-1];
     integer si;
 
-    // Combinational reads/updates.
-    // old_H: the running hash for the current stream, as of its previous block.
-    //        Because no writes to state_ram[sid] occur in the 63 cycles between
-    //        stream sid's turns, this is the same value that was written at
-    //        the last visit.
     wire [255:0] old_H = state_ram[sid];
     wire [255:0] tx_state_final;
 
     // SHA-256 finalisation: H_new = H_old + last_digester_state (per-word +).
     // When pipe_valid is false (first 64 cycles), the pipeline hasn't produced
-    // its first output yet, so we pass old_H through unchanged.
+    // its first output yet, so we pass old_H through unchanged. new_H is only
+    // consumed on cnt==0 cycles anyway.
     wire [255:0] new_H;
     genvar w;
     generate
@@ -122,43 +150,40 @@ module sha256_stream_top (
         end
     endgenerate
 
-    // Writeback: at end of cycle T, stream_id T mod 64's slot gets new_H,
-    // which is the freshly-finalised hash of that stream's most recent block.
-    // Simultaneously, new_H is forwarded to the pipeline as rx_state for the
-    // block entering this same cycle (stream sid's next block).
+    // Writeback: only on block-entry cycles (cnt==0), before drain end.
+    // tx_state_final is only a valid finalised digest on cnt==0; on cnt>0
+    // it's mid-loop self-feedback data, so writing then would corrupt.
     always @(posedge clk) begin
         if (rst) begin
-            for (si = 0; si < 64; si = si + 1)
+            for (si = 0; si < NSTREAMS; si = si + 1)
                 state_ram[si] <= SHA256_IV;
-        end else if (cyc < DRAIN_END) begin
+        end else if (cnt_zero && cyc < DRAIN_END) begin
             state_ram[sid] <= new_H;
         end
     end
 
     // -----------------------------------------------------------------------
-    // SHA-256 compression core (fully pipelined, 64 cycles)
+    // SHA-256 compression core (LOOP-way unrolled)
     // -----------------------------------------------------------------------
     wire [255:0] tx_hash_unused;
-    sha256_transform #(.LOOP(1)) core (
+    sha256_transform #(.LOOP(LOOP)) core (
         .clk            (clk),
-        .feedback       (1'b0),
-        .cnt            (6'd0),
-        .rx_state       (new_H),         // forward: block entering at T gets its stream's fresh H
+        .feedback       (feedback),
+        .cnt            (cnt),
+        .rx_state       (new_H),          // forward: block entering at cnt=0 gets its stream's fresh H
         .rx_input       (prng_block),
         .tx_hash        (tx_hash_unused),
-        .tx_state_final (tx_state_final) // combinational tap on last digester's registered state
+        .tx_state_final (tx_state_final)  // combinational tap on last digester's registered state
     );
 
     // -----------------------------------------------------------------------
-    // Closeout
+    // Closeout: XOR-reduce root over NSTREAMS stream digests.
     // -----------------------------------------------------------------------
-    // At cyc = DRAIN_END, the writeback for the very last block (T = 6399)
-    // has just landed in state_ram[63]. All 64 slots now hold final digests.
     integer ri;
     reg [255:0] root_comb;
     always @* begin
         root_comb = 256'd0;
-        for (ri = 0; ri < 64; ri = ri + 1)
+        for (ri = 0; ri < NSTREAMS; ri = ri + 1)
             root_comb = root_comb ^ state_ram[ri];
     end
 
@@ -175,7 +200,7 @@ module sha256_stream_top (
     // Expose per-stream digests as a flat bus.
     genvar sd;
     generate
-        for (sd = 0; sd < 64; sd = sd + 1) begin : DIGEST_OUT
+        for (sd = 0; sd < NSTREAMS; sd = sd + 1) begin : DIGEST_OUT
             assign stream_digests_flat[sd*256 +: 256] = state_ram[sd];
         end
     endgenerate

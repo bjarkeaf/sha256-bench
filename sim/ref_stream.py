@@ -3,27 +3,34 @@
 
 Replicates in software:
   - The 8x64-bit Fibonacci LFSR PRNG (same taps, same seeds, single-bit advance)
-  - Round-robin 64-stream chaining of 100 blocks per stream
-  - Final XOR-reduce of all 64 stream digests
+  - Round-robin NSTREAMS-stream chaining of BLOCKS_PER_STREAM blocks per stream,
+    where NSTREAMS = 64 / LOOP and LOOP is read from the LOOP env var (default 1)
+  - Final XOR-reduce of all NSTREAMS stream digests
 
 Output format matches sim/tb_stream_top.v so the two logs can be diffed:
 
     STREAM 00 = <64 hex chars>
     STREAM 01 = <64 hex chars>
     ...
-    STREAM 63 = <64 hex chars>
+    STREAM <NSTREAMS-1> = <64 hex chars>
     ROOT      = <64 hex chars>
 
 Hex encoding matches the RTL packing of the 256-bit state {h,g,f,e,d,c,b,a}
 where `a` is bits[31:0] and `h` is bits[255:224]; the printed 64 hex chars
 correspond to bit 255 first, bit 0 last.
 """
+import os
 import struct
 import sys
 
-NSTREAMS = 64
-PACKETS_PER_STREAM = 100
-TOTAL_BLOCKS = NSTREAMS * PACKETS_PER_STREAM  # 6400
+LOOP = int(os.environ.get("LOOP", "1"))
+if LOOP not in (1, 2, 4, 8, 16, 32):
+    sys.stderr.write(f"ERROR: LOOP={LOOP} not in {{1,2,4,8,16,32}}\n")
+    sys.exit(2)
+
+NSTREAMS = 64 // LOOP
+BLOCKS_PER_STREAM = 100
+TOTAL_BLOCKS = NSTREAMS * BLOCKS_PER_STREAM
 
 K = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,

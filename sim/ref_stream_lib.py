@@ -30,8 +30,9 @@ except ImportError:
     sys.exit(2)
 
 from ref_stream import (
+    LOOP,
     NSTREAMS,
-    PACKETS_PER_STREAM,
+    BLOCKS_PER_STREAM,
     TOTAL_BLOCKS,
     MASK32,
     LFSR_SEEDS,

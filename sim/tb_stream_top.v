@@ -2,11 +2,21 @@
 
 // Testbench for sha256_stream_top.
 //
-// Runs the 64-stream, 100-packet-per-stream chaining scheme end to end and
-// prints per-stream final digests plus the XOR root, in the same format as
-// sim/ref_stream.py so the two logs can be diffed.
+// Runs the NSTREAMS-stream, BLOCKS_PER_STREAM-per-stream chaining scheme
+// end to end and prints per-stream final digests plus the XOR root, in the
+// same format as sim/ref_stream.py so the two logs can be diffed.
+//
+// Compile with -DLOOP=N (N ∈ {1,2,4,8,16,32}) to pick the unroll factor.
+// Defaults to LOOP=1.
+
+`ifndef LOOP
+  `define LOOP 1
+`endif
 
 module tb_stream_top;
+
+    localparam integer LOOP     = `LOOP;
+    localparam integer NSTREAMS = 64 / LOOP;
 
     localparam PERIOD = 10; // ns
     reg clk = 0;
@@ -16,9 +26,9 @@ module tb_stream_top;
 
     wire         done;
     wire [255:0] root_digest;
-    wire [64*256-1:0] stream_digests_flat;
+    wire [NSTREAMS*256-1:0] stream_digests_flat;
 
-    sha256_stream_top uut (
+    sha256_stream_top #(.LOOP(LOOP)) uut (
         .clk                 (clk),
         .rst                 (rst),
         .done                (done),
@@ -26,7 +36,8 @@ module tb_stream_top;
         .stream_digests_flat (stream_digests_flat)
     );
 
-    // Safety timeout: 6400 blocks + 64 latency + reset headroom + margin
+    // Safety timeout scales with LOOP: TOTAL_BLOCKS*LOOP + LATENCY + margin.
+    // Total runtime cycles = 6400 + 64 = 6464 for any LOOP; give plenty of margin.
     localparam integer TIMEOUT = 8000;
     integer cyc_cnt = 0;
     always @(posedge clk) if (!rst) cyc_cnt <= cyc_cnt + 1;
@@ -39,17 +50,15 @@ module tb_stream_top;
         repeat (4) @(posedge clk);
         rst = 0;
 
-        // Wait for done, with timeout
         while (!done && cyc_cnt < TIMEOUT) @(posedge clk);
-        // Sample one delta after the rising edge to let non-blocking assigns settle
         #1;
 
         if (!done) begin
-            $display("FAIL: timeout at cyc_cnt=%0d without done", cyc_cnt);
+            $display("FAIL: timeout at cyc_cnt=%0d without done (LOOP=%0d)", cyc_cnt, LOOP);
             $finish;
         end
 
-        for (i = 0; i < 64; i = i + 1) begin
+        for (i = 0; i < NSTREAMS; i = i + 1) begin
             sd = stream_digests_flat[i*256 +: 256];
             $display("STREAM %02d = %064h", i, sd);
         end
