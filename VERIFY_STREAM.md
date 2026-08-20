@@ -144,7 +144,7 @@ pip install pyserial              # once
 python3 bench/hw_sweep.py --port /dev/ttyUSB1
 ```
 
-First run builds all six bitstreams (~1.5–3 h P&R total, one Vivado
+First run builds all seven bitstreams (~1.5–3 h P&R total, one Vivado
 invocation each). Subsequent runs reuse them (pass `--rebuild` to force
 regeneration).
 
@@ -168,9 +168,59 @@ For the compression core's real 400 MHz Fmax (independent of scheduler
 overhead), use `synth/ooc.tcl` and `results.csv` — that flow already
 measures it.
 
-CSV columns (in order): `loop, nstreams, lut, ff, bram_36k, dsp, wns_ns,
-tns_ns, target_period_ns, fmax_mhz, throughput_gbps, ref_match, root_match,
-streams_matched, git_sha, timestamp_utc, vivado_version, elapsed_s`.
+### CSV columns
+
+`results_hw_sweep.csv` has one row per LOOP, with these fields (in order):
+
+**Identity + totals**
+- `loop`, `nstreams` — configuration.
+- `lut`, `ff`, `bram_36k`, `dsp` — post-route totals from `util.rpt`.
+
+**Per-functional-block breakdown** (from `synth/uart.tcl`'s extra
+`report_utilization -cells [...]` calls; see the block comment there for
+which filter defines each bucket)
+- `lut_core`, `ff_core` — the SHA-256 compression pipeline
+  (`sha256_transform`).
+- `lut_uart`, `ff_uart` — the UART TX FSM (`uart_tx`).
+- `lut_state_ram`, `ff_state_ram` — cells whose name matches `*state_ram*`,
+  i.e. the `NSTREAMS × 256`-bit per-stream H register bank.
+- `lut_lfsr`, `ff_lfsr` — the 8×64-bit LFSR PRNG.
+- `lut_divider`, `ff_divider` — the `clk_div2` toggle FF + BUFG.
+- `lut_rest`, `ff_rest` — derived as `total − (core + uart + state_ram +
+  lfsr + divider)`. Contains: scheduler counters (`cyc`, `cnt`, `sid`),
+  chain-add adders, XOR-reduce for root, byte-serialiser FSM, big
+  `stream_digests_flat` mux, reset counter.
+
+**Timing + throughput**
+- `wns_ns`, `tns_ns`, `target_period_ns` — post-route timing on
+  `clk_div2`. `target_period_ns = 16.0` (62.5 MHz).
+- `fmax_mhz` = `1000 / (target_period_ns − wns_ns)`.
+- `throughput_gbps` = `512 × fmax_mhz / loop / 1000`.
+
+**Ref match**
+- `ref_match` — PASS if RTL == Python golden (both stream digests and root).
+- `root_match` — PASS if just the root matches. Useful for isolating "one
+  stream drifted" vs. "everything drifted."
+- `streams_matched` — `N/NSTREAMS`, count of stream lines that matched.
+
+**Provenance**
+- `git_sha`, `timestamp_utc`, `vivado_version`, `elapsed_s`.
+
+### Sanity checks on the sweep output
+
+Before reading area/throughput numbers, verify these hold. Each catches a
+different failure mode:
+
+| Check | What it catches |
+|---|---|
+| Every `ref_match` is PASS | Scheduler bug or timing violation at runtime |
+| `lut_core + lut_uart + lut_state_ram + lut_lfsr + lut_divider + lut_rest == lut` (and same for `ff_`) | Vivado renamed a cell and the `-cells` filter missed it — one bucket got attributed to `rest` instead |
+| `ff_lfsr` is ≈512 for every LOOP | LFSR is fixed-size regardless of LOOP; if it varies, the filter is picking up something else |
+| `lut_state_ram` shrinks monotonically with LOOP (LOOP=1 largest, LOOP=64 smallest) | State RAM is `NSTREAMS × 256` bits — should scale directly with NSTREAMS |
+| `lut_core` shrinks monotonically with LOOP | Compression core has `64/LOOP` stages |
+| `lut_uart` roughly constant, `lut_divider` tiny (~10) | Both are fixed pieces independent of LOOP |
+| `dsp == 0` everywhere | SHA-256 shouldn't infer DSPs; nonzero means Vivado did something odd |
+| WNS positive on every LOOP | Design meets timing on `clk_div2` at all LOOPs |
 
 ## If it fails
 
