@@ -124,25 +124,26 @@ def program_bitstream(bit):
 DIGEST_LINE = re.compile(r"^(STREAM \d\d|ROOT      )\s*=\s*([0-9a-f]{64})\s*$")
 
 
-def read_uart_digests(port_path, nstreams, per_line_timeout_s=10.0):
-    """Read `nstreams` STREAM lines + 1 ROOT line from the UART.
+def read_uart_digests(ser, nstreams):
+    """Read `nstreams` STREAM lines + 1 ROOT line from a pre-opened serial port.
+
+    `ser` must already be open with the correct timeout set. The caller is
+    responsible for opening the port *before* programming the FPGA so that the
+    kernel TTY buffer captures UART output during the Vivado teardown window.
 
     Returns list of raw lines (STREAM+ROOT only, in order). Raises TimeoutError
     on incomplete capture.
     """
     lines = []
-    with serial.Serial(port_path, baudrate=115200, timeout=per_line_timeout_s) as ser:
-        # Drop any buffered bytes from a previous run.
-        ser.reset_input_buffer()
-        while len(lines) < nstreams + 1:
-            raw = ser.readline()
-            if not raw:
-                raise TimeoutError(
-                    f"Serial read timed out after {len(lines)}/{nstreams+1} lines"
-                )
-            s = raw.decode("ascii", errors="replace").rstrip("\r\n")
-            if DIGEST_LINE.match(s):
-                lines.append(s)
+    while len(lines) < nstreams + 1:
+        raw = ser.readline()
+        if not raw:
+            raise TimeoutError(
+                f"Serial read timed out after {len(lines)}/{nstreams+1} lines"
+            )
+        s = raw.decode("ascii", errors="replace").rstrip("\r\n")
+        if DIGEST_LINE.match(s):
+            lines.append(s)
     return lines
 
 
@@ -235,14 +236,20 @@ def run_one(loop, args, provenance):
             fmax = 1000.0 / achieved_period
             throughput = 512.0 * fmax / loop / 1000.0
 
-    # Program + capture
-    program_bitstream(bit)
-    try:
-        rtl_lines = read_uart_digests(args.port, nstreams,
-                                       per_line_timeout_s=args.read_timeout)
-    except TimeoutError as e:
-        print(f"  [read]  FAIL: {e}")
-        rtl_lines = []
+    # Open serial port before programming so the kernel TTY buffer captures UART
+    # output during Vivado's hw_manager teardown (~several seconds). The FPGA
+    # finishes hashing ~103 µs after configuration; without pre-opening, bytes
+    # from LOOP=1 (5070 bytes) overflow the 4096-byte TTY buffer before Python
+    # even opens the port.
+    with serial.Serial(args.port, baudrate=115200,
+                       timeout=args.read_timeout) as ser:
+        ser.reset_input_buffer()   # drop stale bytes from any previous run
+        program_bitstream(bit)
+        try:
+            rtl_lines = read_uart_digests(ser, nstreams)
+        except TimeoutError as e:
+            print(f"  [read]  FAIL: {e}")
+            rtl_lines = []
 
     ref_lines = compute_golden(loop)
     all_match, root_match, streams_matched, first_diff = diff_digests(
