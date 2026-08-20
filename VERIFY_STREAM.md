@@ -140,19 +140,23 @@ Reads digests back over the same JTAG connection used for programming, via
 the `BSCANE2` USER1 scan chain. `bench/program_bscan.tcl` programs the board
 and calls `scan_dr_hw_jtag` to shift out all digests in one pass.
 
-**Before launching the multi-hour sweep**: build LOOP=1 alone (~30 min P&R),
-then verify the readback protocol works before spending the rest of the
-budget on the other six LOOPs:
+**Before launching the multi-hour sweep**: verify the readback protocol
+works on LOOP=1 alone before spending P&R budget on the other six LOOPs.
+If `vivado_bscan_L1/sha256_stream_bscan_top.bit` doesn't exist yet, build
+it first (~30 min):
 
 ```sh
 cd sha256-bench
 vivado -mode batch -source synth/bscan.tcl -tclargs 1
-vivado -mode batch -source bench/program_bscan.tcl \
-       -tclargs vivado_bscan_L1/sha256_stream_bscan_top.bit 64
 ```
 
-The second command re-runs in ~10 s against the already-built bitstream, so
-you can iterate on `bench/program_bscan.tcl` without rebuilding. Success =
+Then run just the programming + readback step (~10 s per invocation, so you
+can iterate on `bench/program_bscan.tcl` without rebuilding):
+
+```sh
+vivado -mode batch -source bench/program_bscan.tcl \
+       -tclargs vivado_bscan_L1/sha256_stream_bscan_top.bit 64
+``` Success =
 64 STREAM lines + ROOT with real-looking digests (not `0000...0002` etc.).
 Cross-check against the Python golden:
 
