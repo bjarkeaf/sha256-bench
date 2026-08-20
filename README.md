@@ -6,7 +6,7 @@ Sweeps two design knobs and reports LUT/FF area and Fmax after Vivado place-and-
 
 | Knob | Values | Effect |
 |---|---|---|
-| `LOOP` | 1, 2, 4, 8, 16, 32 | Unroll factor. `LOOP=1` = fully pipelined (64 stages, 1 cycle/hash). `LOOP=2` = 32 stages, 2 cycles/hash. Etc. |
+| `LOOP` | 1, 2, 4, 8, 16, 32, 64 | Unroll factor. `LOOP=1` = fully pipelined (64 stages, 1 cycle/hash). `LOOP=64` = fully rolled (1 stage, 64 cycles/hash). |
 | `N_CORES` | 1, 2, 4, 8 | Independent SHA-256 pipelines in parallel. |
 
 At `LOOP=1`, `N_CORES=1`: one 512-bit block enters the pipeline every clock cycle, producing one 256-bit hash 64 cycles later. Throughput = 512 × Fmax bits/s per core.
@@ -86,16 +86,20 @@ vivado -mode batch -source synth/bist.tcl
 Flash with Vivado Hardware Manager → Auto Connect → Program Device.
 See `VERIFY_STREAM.md` for the full LED-pattern table.
 
-### Full HW sweep via PMOD UART (all 6 LOOPs)
+### Full HW sweep (all 7 LOOPs)
 
-Overnight regression: for each LOOP ∈ {1,2,4,8,16,32}, build the bitstream,
-program the board, stream digests back over a PMOD UART, diff against the
-Python golden, and log LUT/FF/BRAM/DSP + WNS/TNS + Fmax + throughput +
-ref-match into `results_hw_sweep.csv`.
+Overnight regression: for each LOOP ∈ {1,2,4,8,16,32,64}, build the
+bitstream, program the board, read back digests, diff against the Python
+golden, and log LUT/FF/BRAM/DSP + WNS/TNS + Fmax + throughput + ref-match
+into `results_hw_sweep.csv`.
 
-Wire PMOD JA1 (pin Y18) to a USB-UART adapter's RX line and PMOD GND to the
-adapter's GND. Then:
+**BSCAN mode** (single USB cable, no extra hardware):
+```sh
+cd sha256-bench
+python3 bench/hw_sweep.py --bscan
+```
 
+**UART mode** (requires a USB-UART adapter on PMOD JA1 / Y18):
 ```sh
 cd sha256-bench
 pip install pyserial     # once
