@@ -2,26 +2,22 @@
 
 // Board-level BSCAN wrapper for sha256_stream_top targeting the Pynq-Z2.
 //
-// Runs the streaming SHA-256 scheduler once at power-on, latches the digests
-// when done rises, then makes them readable over the existing JTAG USB cable
-// via the Xilinx BSCANE2 USER1 scan chain.  No PMOD UART adapter required.
+// Runs the streaming SHA-256 scheduler once at power-on, then makes its stable
+// results readable one at a time over the existing JTAG USB cable via the
+// Xilinx BSCANE2 USER1 scan chain.  No PMOD UART adapter required.
 //
-// After programming, the laptop calls bench/program_bscan.tcl, which issues
-// a scan_dr_hw_jtag command to shift out SHREG_W bits.  The bit layout is:
+// Each 257-bit DR scan captures:
 //
-//   [0]                        done_r  (1 if DUT has finished)
-//   [256:1]                    root_r[255:0]     (root_r[0] at bit 1)
-//   [512:257]                  stream 0 [255:0]
-//   [768:513]                  stream 1 [255:0]
-//   ...
-//   [(NSTREAMS+1)*256 : NSTREAMS*256+1]  stream NSTREAMS-1 [255:0]
+//   [0]       done
+//   [256:1]   selected digest
 //
-// Bits shift out LSB-first on TDO; the Tcl parser reverses bytes to
-// reconstruct the standard MSB-first SHA-256 hex strings.
+// TDI carries the selector to use on the next scan: 0..NSTREAMS-1 selects a
+// stream and NSTREAMS selects the root.  This avoids duplicating every digest
+// into a second result bank and a giant BSCAN shift register.
 //
 // LEDs (Pynq-Z2 LD0..LD1):
 //   LD0 led_alive  : ~0.5 Hz heartbeat off the divided clock
-//   LD1 led_done   : mirrors done_r (set after the run)
+//   LD1 led_done   : mirrors the DUT's sticky done output
 //
 // Reset is self-generated: rst is high for the first 128 clk_div cycles.
 
@@ -33,8 +29,6 @@ module sha256_stream_bscan_top #(
     output wire led_done    // LD1
 );
     localparam integer NSTREAMS = 64 / LOOP;
-    // Total shift-register width: 1 done bit + (NSTREAMS+1) 256-bit digests
-    localparam integer SHREG_W  = 1 + (NSTREAMS + 1) * 256;
 
     // ------------------------------------------------------------------
     // 125 → 62.5 MHz clock divider (SHA chain-add path fails at 125 MHz)
@@ -66,29 +60,38 @@ module sha256_stream_bscan_top #(
     );
 
     // ------------------------------------------------------------------
-    // Latch digests on rising edge of done (clk_div domain).
-    // The ASYNC_REG attribute on done_r suppresses Vivado CDC warnings;
-    // the actual BSCAN scan happens seconds after done_r is set, so
-    // metastability is not a concern.
+    // BSCAN USER1: expose one selected digest per 257-bit JTAG scan.
+    // Keeping the readback logic in one hierarchy also makes util_bscan.rpt
+    // account for its selector/mux, scan register, and primitive together.
     // ------------------------------------------------------------------
-    (* ASYNC_REG = "TRUE" *) reg done_r = 1'b0;
-    reg [255:0]             root_r    = 256'd0;
-    reg [NSTREAMS*256-1:0]  digests_r;
-    initial digests_r = {NSTREAMS*256{1'b0}};
-
-    always @(posedge clk_div) begin
-        if (done && !done_r) begin
-            done_r    <= 1'b1;
-            root_r    <= root_digest;
-            digests_r <= stream_digests_flat;
-        end
-    end
+    bscan_digest_readback #(.NSTREAMS(NSTREAMS)) readback (
+        .done(done),
+        .root_digest(root_digest),
+        .stream_digests_flat(stream_digests_flat)
+    );
 
     // ------------------------------------------------------------------
-    // BSCAN USER1: expose digests via the JTAG TAP already on the USB cable.
-    // DRCK is the gated TCK that runs only during Capture-DR and Shift-DR.
+    // LEDs
     // ------------------------------------------------------------------
+    reg [25:0] hb = 26'd0;
+    always @(posedge clk_div) hb <= hb + 26'd1;
+
+    assign led_alive = hb[25];
+    assign led_done  = done;
+
+endmodule
+
+
+module bscan_digest_readback #(
+    parameter integer NSTREAMS = 64,
+    parameter integer SEL_W    = $clog2(NSTREAMS + 1)
+) (
+    input wire                         done,
+    input wire [255:0]                 root_digest,
+    input wire [NSTREAMS*256-1:0]      stream_digests_flat
+);
     wire bscan_capture, bscan_drck, bscan_sel, bscan_shift, bscan_tdi;
+    wire bscan_tck, bscan_update;
     wire bscan_tdo;
 
     BSCANE2 #(.JTAG_CHAIN(1)) bscan_inst (
@@ -98,33 +101,35 @@ module sha256_stream_bscan_top #(
         .RUNTEST (),
         .SEL     (bscan_sel),
         .SHIFT   (bscan_shift),
-        .TCK     (),
+        .TCK     (bscan_tck),
         .TDI     (bscan_tdi),
         .TMS     (),
-        .UPDATE  (),
+        .UPDATE  (bscan_update),
         .TDO     (bscan_tdo)
     );
 
-    reg [SHREG_W-1:0] shreg;
+    reg [SEL_W-1:0] read_sel = {SEL_W{1'b0}};
+    wire [255:0] selected_digest =
+        (read_sel < NSTREAMS)
+            ? stream_digests_flat[read_sel*256 +: 256]
+            : root_digest;
+
+    reg [256:0] shreg = 257'd0;
 
     always @(posedge bscan_drck) begin
         if (bscan_sel && bscan_capture)
-            // Pack with done_r at bit 0 (shifted out first), root next,
-            // then streams in ascending order (stream 0 at bits [512:257]).
-            shreg <= {digests_r, root_r, done_r};
+            shreg <= {selected_digest, done};
         else if (bscan_sel && bscan_shift)
-            shreg <= {bscan_tdi, shreg[SHREG_W-1:1]};
+            shreg <= {bscan_tdi, shreg[256:1]};
+    end
+
+    // A completed DR scan leaves its TDI payload in shreg. Commit the low
+    // selector bits during Update-DR so they choose the following capture.
+    always @(posedge bscan_tck) begin
+        if (bscan_sel && bscan_update)
+            read_sel <= shreg[SEL_W-1:0];
     end
 
     assign bscan_tdo = shreg[0];
-
-    // ------------------------------------------------------------------
-    // LEDs
-    // ------------------------------------------------------------------
-    reg [25:0] hb = 26'd0;
-    always @(posedge clk_div) hb <= hb + 26'd1;
-
-    assign led_alive = hb[25];
-    assign led_done  = done_r;
 
 endmodule

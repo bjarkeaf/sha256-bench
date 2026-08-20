@@ -16,7 +16,7 @@ For each LOOP the script:
   1. Builds the bitstream (synth/uart.tcl or synth/bscan.tcl) if needed.
   2. Parses post-route util.rpt + timing.rpt for area and timing.
   3. Programs the FPGA and reads back STREAM+ROOT lines (UART: over serial;
-     BSCAN: via scan_dr_hw_jtag inside bench/program_bscan.tcl).
+     BSCAN: sequential 257-bit scans in bench/program_bscan.tcl).
   4. Computes the Python golden (sim/ref_stream.py) and diffs.
   5. Appends one row to results_hw_sweep.csv.
 
@@ -85,7 +85,7 @@ def get_vivado_version():
             capture_output=True, text=True, timeout=15,
         )
         # First line is e.g. "Vivado v2023.2 (64-bit)"
-        m = re.search(r"Vivado\s+v(\S+)", r.stdout)
+        m = re.search(r"Vivado\s+v(\S+)", r.stdout, re.IGNORECASE)
         return m.group(1) if m else "unknown"
     except Exception:
         return "unknown"
@@ -134,11 +134,11 @@ def build_bscan_bitstream(loop, force):
 
 
 def read_bscan_digests(bit, nstreams):
-    """Program the FPGA and read digests back via BSCAN USER1.
+    """Program the FPGA and read digests sequentially via BSCAN USER1.
 
     Invokes bench/program_bscan.tcl via Vivado batch mode, which programs the
-    device and prints STREAM/ROOT lines to stdout.  Returns a list of those
-    lines (same format as read_uart_digests).
+    device, performs one 257-bit scan per result, and prints STREAM/ROOT lines
+    to stdout. Returns a list of those lines (same format as UART readback).
     """
     cmd = vivado("-mode", "batch",
                  "-source", str(PROG_BSCAN_TCL),
@@ -237,7 +237,7 @@ CSV_FIELDS = [
     # Per-functional-block breakdown (see synth/uart.tcl for how each is defined;
     # `rest` is the derived bucket = total minus all the named blocks).
     "lut_core",      "ff_core",
-    "lut_uart",      "ff_uart",
+    "lut_readback",  "ff_readback",
     "lut_state_ram", "ff_state_ram",
     "lut_lfsr",      "ff_lfsr",
     "lut_divider",   "ff_divider",
@@ -250,6 +250,14 @@ CSV_FIELDS = [
 
 def append_csv(row):
     write_header = not CSV_PATH.exists()
+    if not write_header:
+        with open(CSV_PATH, newline="") as f:
+            existing_header = next(csv.reader(f), [])
+        if existing_header != CSV_FIELDS:
+            raise RuntimeError(
+                f"{CSV_PATH.name} uses an older CSV schema; move or delete it "
+                "before writing lut_readback/ff_readback results"
+            )
     with open(CSV_PATH, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         if write_header:
@@ -321,8 +329,8 @@ def run_one(loop, args, provenance):
         "dsp":              util["dsp"],
         "lut_core":         blocks["core"]["lut"],
         "ff_core":          blocks["core"]["ff"],
-        "lut_uart":         blocks["uart"]["lut"],
-        "ff_uart":          blocks["uart"]["ff"],
+        "lut_readback":     blocks["readback"]["lut"],
+        "ff_readback":      blocks["readback"]["ff"],
         "lut_state_ram":    blocks["state_ram"]["lut"],
         "ff_state_ram":     blocks["state_ram"]["ff"],
         "lut_lfsr":         blocks["lfsr"]["lut"],

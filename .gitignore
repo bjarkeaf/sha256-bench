@@ -39,3 +39,18 @@ CLAUDE.md
 # Local benchmark output
 clockInfo.txt
 "@ | Set-Content .gitignore
+
+
+__pycache__/
+*.pyc
+sim/stream_ref.digests
+sim/stream_rtl.digests
+sim/stream_rtl.log
+sim/stream_ref.log
+results_hw_sweep.csv
+single_test_results.csv
+tight_setup_hold_pins.txt
+vivado_bist/
+vivado_bscan_*/
+vivado_uart_*/
+vivado_hw_stream/

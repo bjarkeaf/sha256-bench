@@ -14,7 +14,7 @@
 #   util_hier.rpt               - full hierarchical breakdown
 #   util_synth.rpt              - post-synthesis utilization (before P&R)
 #   util_core.rpt               - just sha256_transform (compression core)
-#   util_bscan.rpt              - BSCAN shift-register cells
+#   util_bscan.rpt              - BSCAN primitive, selector/mux, and scan register
 #   util_state_ram.rpt          - all state_ram register cells
 #   util_lfsr.rpt               - all lfsr register cells
 #   util_divider.rpt            - just clk_div2
@@ -57,10 +57,10 @@ report_utilization    -file "$OUTDIR/util_hier.rpt" -hierarchical
 report_timing_summary -file "$OUTDIR/timing.rpt" -max_paths 10
 
 # Per-functional-block breakdowns.  Same pattern as synth/uart.tcl, with
-# util_uart replaced by util_bscan (shift register + BSCANE2 primitive).
+# util_uart replaced by util_bscan (selector/mux, scan register, and BSCANE2).
 foreach {label filter} {
     core      {module_hier uut/core}
-    bscan     {module_hier bscan_inst}
+    bscan     {module_hier readback}
     state_ram {name        *state_ram*}
     lfsr      {name        *lfsr*}
     divider   {module_hier divider}

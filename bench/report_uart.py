@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Parsers for Vivado post-route reports produced by synth/uart.tcl.
+Parsers for Vivado post-route reports produced by synth/{uart,bscan}.tcl.
 
 Two entry points, both take absolute or relative paths to the report files:
 
@@ -85,13 +85,11 @@ def parse_timing(path):
 
 
 def parse_block_breakdown(outdir):
-    """Parse the per-functional-block util reports written by synth/uart.tcl.
+    """Parse the per-functional-block UART or BSCAN utilization reports.
 
-    Reads {util,util_core,util_uart,util_state_ram,util_lfsr,util_divider}.rpt
-    from `outdir` and returns a dict keyed by block name with `lut` and `ff`
-    subfields. Missing / empty files → zero. Derives a synthetic `rest` bucket
-    = total − (core + uart + state_ram + lfsr + divider) so all rows sum to
-    the total.
+    The readback bucket comes from util_bscan.rpt when present, otherwise from
+    util_uart.rpt. Missing / empty files become zero. A synthetic `rest` bucket
+    is total minus core, readback, state RAM, LFSR, and divider.
     """
     import os
     def _read(name, key):
@@ -101,21 +99,40 @@ def parse_block_breakdown(outdir):
         val = parse_utilization(path).get(key)
         return val if val is not None else 0
 
-    blocks = ["core", "uart", "state_ram", "lfsr", "divider"]
+    readback_report = (
+        "util_bscan.rpt"
+        if os.path.exists(os.path.join(outdir, "util_bscan.rpt"))
+        else "util_uart.rpt"
+    )
+    blocks = ["core", "state_ram", "lfsr", "divider"]
     out = {}
     for block in blocks:
         out[block] = {
             "lut": _read(f"util_{block}.rpt", "lut"),
             "ff":  _read(f"util_{block}.rpt", "ff"),
         }
+    out["readback"] = {
+        "lut": _read(readback_report, "lut"),
+        "ff":  _read(readback_report, "ff"),
+    }
     total = {
         "lut": _read("util.rpt", "lut"),
         "ff":  _read("util.rpt", "ff"),
     }
     out["total"] = total
     out["rest"] = {
-        "lut": max(0, total["lut"] - sum(out[b]["lut"] for b in blocks)),
-        "ff":  max(0, total["ff"]  - sum(out[b]["ff"]  for b in blocks)),
+        "lut": max(
+            0,
+            total["lut"]
+            - out["readback"]["lut"]
+            - sum(out[b]["lut"] for b in blocks),
+        ),
+        "ff": max(
+            0,
+            total["ff"]
+            - out["readback"]["ff"]
+            - sum(out[b]["ff"] for b in blocks),
+        ),
     }
     return out
 
@@ -135,5 +152,5 @@ if __name__ == "__main__":
         }, indent=2))
     else:
         print("Usage: report_uart.py <util.rpt> <timing.rpt>\n"
-              "   or: report_uart.py <vivado_uart_L*/>", file=sys.stderr)
+              "   or: report_uart.py <vivado_{uart,bscan}_L*/>", file=sys.stderr)
         sys.exit(2)

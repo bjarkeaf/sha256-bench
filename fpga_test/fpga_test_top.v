@@ -112,24 +112,47 @@ module fpga_test_top (
         sw0 ? 512'd0 : ABC_BLOCK;
 
 
+
     // ------------------------------------------------------------
-    // Existing SHA core from the repo.
-    // LOOP=1 means fully pipelined.
+    // Loop general
+    // ------------------------------------------------------------
+
+    // LOOP=64 means one physical SHA round is reused for all 64 rounds.
+    localparam integer SHA_LOOP = 1;
+
+    reg [5:0] sha_cnt = 6'd0;
+
+    // On cnt=0, load a new input/state.
+    // On subsequent cycles, feed the previous round back into the core.
+    wire sha_feedback =
+        (SHA_LOOP == 1) ? 1'b0 : (sha_cnt != 6'd0);
+
+    always @(posedge clk50) begin
+        if (!locked)
+            sha_cnt <= 6'd0;
+        else if (sha_cnt == SHA_LOOP - 1)
+            sha_cnt <= 6'd0;
+        else
+            sha_cnt <= sha_cnt + 6'd1;
+    end;
+
+
+    // ------------------------------------------------------------
+    // SHA core
     // ------------------------------------------------------------
 
     wire [255:0] tx_hash;
 
     sha256_transform #(
-        .LOOP(1)
+        .LOOP(SHA_LOOP)
     ) sha (
         .clk      (clk50),
-        .feedback (1'b0),
-        .cnt      (6'd0),
+        .feedback (sha_feedback),
+        .cnt      (sha_cnt),
         .rx_state (SHA256_IV),
         .rx_input (sha_input),
         .tx_hash  (tx_hash)
     );
-
 
     // ------------------------------------------------------------
     // LEDs

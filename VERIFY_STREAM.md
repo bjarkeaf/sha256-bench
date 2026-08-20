@@ -192,20 +192,22 @@ measures it.
 - `loop`, `nstreams` — configuration.
 - `lut`, `ff`, `bram_36k`, `dsp` — post-route totals from `util.rpt`.
 
-**Per-functional-block breakdown** (from `synth/uart.tcl`'s extra
+**Per-functional-block breakdown** (from `synth/{uart,bscan}.tcl`'s extra
 `report_utilization -cells [...]` calls; see the block comment there for
 which filter defines each bucket)
 - `lut_core`, `ff_core` — the SHA-256 compression pipeline
   (`sha256_transform`).
-- `lut_uart`, `ff_uart` — the UART TX FSM (`uart_tx`).
+- `lut_readback`, `ff_readback` — the selected readback interface: UART logic
+  for UART builds, or the selector/mux, 257-bit scan register, and BSCANE2
+  primitive for BSCAN builds.
 - `lut_state_ram`, `ff_state_ram` — cells whose name matches `*state_ram*`,
   i.e. the `NSTREAMS × 256`-bit per-stream H register bank.
 - `lut_lfsr`, `ff_lfsr` — the 8×64-bit LFSR PRNG.
 - `lut_divider`, `ff_divider` — the `clk_div2` toggle FF + BUFG.
-- `lut_rest`, `ff_rest` — derived as `total − (core + uart + state_ram +
+- `lut_rest`, `ff_rest` — derived as `total − (core + readback + state_ram +
   lfsr + divider)`. Contains: scheduler counters (`cyc`, `cnt`, `sid`),
-  chain-add adders, XOR-reduce for root, byte-serialiser FSM, big
-  `stream_digests_flat` mux, reset counter.
+  chain-add adders, XOR-reduce for root, any uncategorized serializer/control
+  logic, and the reset counter.
 
 **Timing + throughput**
 - `wns_ns`, `tns_ns`, `target_period_ns` — post-route timing on
@@ -230,11 +232,11 @@ different failure mode:
 | Check | What it catches |
 |---|---|
 | Every `ref_match` is PASS | Scheduler bug or timing violation at runtime |
-| `lut_core + lut_uart + lut_state_ram + lut_lfsr + lut_divider + lut_rest == lut` (and same for `ff_`) | Vivado renamed a cell and the `-cells` filter missed it — one bucket got attributed to `rest` instead |
+| `lut_core + lut_readback + lut_state_ram + lut_lfsr + lut_divider + lut_rest == lut` (and same for `ff_`) | Vivado renamed a cell and the `-cells` filter missed it — one bucket got attributed to `rest` instead |
 | `ff_lfsr` is ≈512 for every LOOP | LFSR is fixed-size regardless of LOOP; if it varies, the filter is picking up something else |
 | `lut_state_ram` shrinks monotonically with LOOP (LOOP=1 largest, LOOP=64 smallest) | State RAM is `NSTREAMS × 256` bits — should scale directly with NSTREAMS |
 | `lut_core` shrinks monotonically with LOOP | Compression core has `64/LOOP` stages |
-| `lut_uart` roughly constant, `lut_divider` tiny (~10) | Both are fixed pieces independent of LOOP |
+| `lut_readback` is plausible for the selected interface, `lut_divider` tiny (~10) | A report filter accidentally captured unrelated logic |
 | `dsp == 0` everywhere | SHA-256 shouldn't infer DSPs; nonzero means Vivado did something odd |
 | WNS positive on every LOOP | Design meets timing on `clk_div2` at all LOOPs |
 
