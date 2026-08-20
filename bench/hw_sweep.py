@@ -1,29 +1,28 @@
 #!/usr/bin/env python3
 """
-Overnight hardware sweep for sha256_stream_uart_top on Pynq-Z2.
+Overnight hardware sweep for sha256_stream_{uart,bscan}_top on Pynq-Z2.
 
-For each LOOP ∈ {1,2,4,8,16,32}:
-  1. Build the bitstream via synth/uart.tcl (skipped if it already exists,
-     unless --rebuild is given).
-  2. Parse post-route util.rpt + timing.rpt for LUT/FF/BRAM/DSP/WNS/TNS.
-  3. Open the serial port and drain any buffered bytes.
-  4. Program the bitstream via bench/program.tcl.
-  5. Read STREAM+ROOT lines back over the PMOD UART.
-  6. Compute the Python golden with LOOP=$L python3 sim/ref_stream.py.
-  7. Diff, record one row of the results CSV with area, timing, throughput,
-     ref-match, root-match, streams-matched, git SHA, timestamp, Vivado
-     version, and elapsed time.
+Two readback modes (choose one):
 
-Usage:
+  UART mode (requires a USB-UART adapter on PMOD JA1):
     python3 bench/hw_sweep.py --port /dev/ttyUSB1
-    python3 bench/hw_sweep.py --port /dev/ttyUSB1 --loops 1,2,4
-    python3 bench/hw_sweep.py --port COM6 --rebuild            # Windows
+    python3 bench/hw_sweep.py --port COM6 --rebuild   # Windows
+
+  BSCAN mode (single USB cable, no adapter needed):
+    python3 bench/hw_sweep.py --bscan
+    python3 bench/hw_sweep.py --bscan --loops 1,2,4
+
+For each LOOP the script:
+  1. Builds the bitstream (synth/uart.tcl or synth/bscan.tcl) if needed.
+  2. Parses post-route util.rpt + timing.rpt for area and timing.
+  3. Programs the FPGA and reads back STREAM+ROOT lines (UART: over serial;
+     BSCAN: via scan_dr_hw_jtag inside bench/program_bscan.tcl).
+  4. Computes the Python golden (sim/ref_stream.py) and diffs.
+  5. Appends one row to results_hw_sweep.csv.
 
 Dependencies:
-    pip install pyserial
-    Vivado on PATH (used for building + programming bitstreams).
-
-Run from the repo root (the paths are relative to it).
+    Vivado on PATH.
+    UART mode only: pip install pyserial
 """
 import argparse
 import csv
@@ -36,20 +35,22 @@ import time
 from pathlib import Path
 
 try:
-    import serial  # pyserial
+    import serial  # pyserial — only required for UART mode
+    _SERIAL_AVAILABLE = True
 except ImportError:
-    sys.stderr.write("ERROR: pyserial not installed. Run: pip install pyserial\n")
-    sys.exit(2)
+    _SERIAL_AVAILABLE = False
 
 # The plan's canonical LOOP set (divisors of 64).
 LEGAL_LOOPS = [1, 2, 4, 8, 16, 32, 64]
 
 # Repo layout (paths resolved relative to the repo root, which we cd into).
-REPO_ROOT = Path(__file__).resolve().parent.parent
-UART_TCL  = REPO_ROOT / "synth" / "uart.tcl"
-PROG_TCL  = REPO_ROOT / "bench" / "program.tcl"
-REF_PY    = REPO_ROOT / "sim"   / "ref_stream.py"
-CSV_PATH  = REPO_ROOT / "results_hw_sweep.csv"
+REPO_ROOT     = Path(__file__).resolve().parent.parent
+UART_TCL      = REPO_ROOT / "synth" / "uart.tcl"
+BSCAN_TCL     = REPO_ROOT / "synth" / "bscan.tcl"
+PROG_TCL      = REPO_ROOT / "bench" / "program.tcl"
+PROG_BSCAN_TCL = REPO_ROOT / "bench" / "program_bscan.tcl"
+REF_PY        = REPO_ROOT / "sim"   / "ref_stream.py"
+CSV_PATH      = REPO_ROOT / "results_hw_sweep.csv"
 
 sys.path.insert(0, str(REPO_ROOT / "bench"))
 from report_uart import parse_utilization, parse_timing, parse_block_breakdown  # noqa: E402
@@ -105,6 +106,42 @@ def build_bitstream(loop, force):
     if r.returncode != 0 or not bit.exists():
         raise RuntimeError(f"Bitstream build failed for LOOP={loop}")
     return bit
+
+
+def build_bscan_bitstream(loop, force):
+    """Ensure vivado_bscan_L${loop}/sha256_stream_bscan_top.bit exists."""
+    outdir = REPO_ROOT / f"vivado_bscan_L{loop}"
+    bit    = outdir / "sha256_stream_bscan_top.bit"
+    if bit.exists() and not force:
+        print(f"  [build] LOOP={loop}: reusing existing BSCAN bitstream")
+        return bit
+    print(f"  [build] LOOP={loop}: running vivado -mode batch -source synth/bscan.tcl ...")
+    cmd = ["vivado", "-mode", "batch",
+           "-source", str(BSCAN_TCL),
+           "-tclargs", str(loop)]
+    r = subprocess.run(cmd, cwd=REPO_ROOT)
+    if r.returncode != 0 or not bit.exists():
+        raise RuntimeError(f"BSCAN bitstream build failed for LOOP={loop}")
+    return bit
+
+
+def read_bscan_digests(bit, nstreams):
+    """Program the FPGA and read digests back via BSCAN USER1.
+
+    Invokes bench/program_bscan.tcl via Vivado batch mode, which programs the
+    device and prints STREAM/ROOT lines to stdout.  Returns a list of those
+    lines (same format as read_uart_digests).
+    """
+    cmd = ["vivado", "-mode", "batch",
+           "-source", str(PROG_BSCAN_TCL),
+           "-tclargs", str(bit), str(nstreams)]
+    r = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True,
+                       timeout=300)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"program_bscan.tcl failed (rc={r.returncode}):\n{r.stderr[-2000:]}"
+        )
+    return [ln for ln in r.stdout.splitlines() if DIGEST_LINE.match(ln)]
 
 
 def program_bitstream(bit):
@@ -218,16 +255,19 @@ def append_csv(row):
 def run_one(loop, args, provenance):
     start = time.time()
     nstreams = 64 // loop
-    outdir   = REPO_ROOT / f"vivado_uart_L{loop}"
 
-    bit = build_bitstream(loop, args.rebuild)
+    if args.bscan:
+        bit    = build_bscan_bitstream(loop, args.rebuild)
+        outdir = REPO_ROOT / f"vivado_bscan_L{loop}"
+    else:
+        bit    = build_bitstream(loop, args.rebuild)
+        outdir = REPO_ROOT / f"vivado_uart_L{loop}"
 
-    util  = parse_utilization(str(outdir / "util.rpt"))
-    tim   = parse_timing(str(outdir / "timing.rpt"))
+    util   = parse_utilization(str(outdir / "util.rpt"))
+    tim    = parse_timing(str(outdir / "timing.rpt"))
     blocks = parse_block_breakdown(str(outdir))
 
-    # The design runs on a BUFG /2 divider from the 125 MHz onboard clock,
-    # so the constrained clock (clk_div2) has a 16 ns target period.
+    # Both wrappers run on clk_div2 (62.5 MHz, 16 ns period).
     target_period = 16.0
     fmax = throughput = None
     if tim["wns_ns"] is not None:
@@ -236,20 +276,25 @@ def run_one(loop, args, provenance):
             fmax = 1000.0 / achieved_period
             throughput = 512.0 * fmax / loop / 1000.0
 
-    # Open serial port before programming so the kernel TTY buffer captures UART
-    # output during Vivado's hw_manager teardown (~several seconds). The FPGA
-    # finishes hashing ~103 µs after configuration; without pre-opening, bytes
-    # from LOOP=1 (5070 bytes) overflow the 4096-byte TTY buffer before Python
-    # even opens the port.
-    with serial.Serial(args.port, baudrate=115200,
-                       timeout=args.read_timeout) as ser:
-        ser.reset_input_buffer()   # drop stale bytes from any previous run
-        program_bitstream(bit)
+    if args.bscan:
+        # BSCAN: program_bscan.tcl handles programming + readback in one call.
         try:
-            rtl_lines = read_uart_digests(ser, nstreams)
-        except TimeoutError as e:
+            rtl_lines = read_bscan_digests(bit, nstreams)
+        except Exception as e:
             print(f"  [read]  FAIL: {e}")
             rtl_lines = []
+    else:
+        # UART: open serial port before programming so the kernel TTY buffer
+        # captures output during Vivado's hw_manager teardown window.
+        with serial.Serial(args.port, baudrate=115200,
+                           timeout=args.read_timeout) as ser:
+            ser.reset_input_buffer()
+            program_bitstream(bit)
+            try:
+                rtl_lines = read_uart_digests(ser, nstreams)
+            except TimeoutError as e:
+                print(f"  [read]  FAIL: {e}")
+                rtl_lines = []
 
     ref_lines = compute_golden(loop)
     all_match, root_match, streams_matched, first_diff = diff_digests(
@@ -300,19 +345,27 @@ def run_one(loop, args, provenance):
 # ---------------------------------------------------------------------------
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
-    p.add_argument("--port", required=True,
-                   help="serial port (e.g. /dev/ttyUSB1 on Linux, COM6 on Windows)")
+    p.add_argument("--port", default=None,
+                   help="serial port for UART mode (e.g. /dev/ttyUSB1, COM6)")
+    p.add_argument("--bscan", action="store_true",
+                   help="use BSCAN JTAG readback (no UART adapter required)")
     p.add_argument("--loops", default="1,2,4,8,16,32,64",
                    help="comma-separated LOOP values to sweep")
     p.add_argument("--rebuild", action="store_true",
                    help="rebuild bitstreams even if they already exist")
     p.add_argument("--read-timeout", type=float, default=10.0,
-                   help="per-line serial read timeout in seconds")
+                   help="per-line serial read timeout in seconds (UART mode only)")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+
+    if not args.bscan and not args.port:
+        sys.exit("ERROR: supply --port <device> for UART mode or --bscan for JTAG readback")
+    if not args.bscan and not _SERIAL_AVAILABLE:
+        sys.exit("ERROR: pyserial not installed. Run: pip install pyserial")
+
     loops = [int(x) for x in args.loops.split(",")]
     for L in loops:
         if L not in LEGAL_LOOPS:
@@ -322,7 +375,8 @@ def main():
         "git_sha":        get_git_sha(),
         "vivado_version": get_vivado_version(),
     }
-    print(f"Sweep: loops={loops} port={args.port} git={provenance['git_sha']} "
+    mode = "BSCAN" if args.bscan else f"UART {args.port}"
+    print(f"Sweep: loops={loops} mode={mode} git={provenance['git_sha']} "
           f"vivado={provenance['vivado_version']}")
     print(f"CSV → {CSV_PATH}")
 
