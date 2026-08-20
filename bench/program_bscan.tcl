@@ -136,9 +136,18 @@ puts [format "DR: total=%d bits, our 257-bit slot at offset %d" \
 # ---------------------------------------------------------------------------
 # Return {done digest_hex} from the hexadecimal value returned by a full-chain
 # DR scan.  Extracts our 257-bit slot at $our_dr_offset first, then splits
-# into done (bit 0) and digest (bits 256:1).  Tcl integers are arbitrary
-# precision, so the 256-bit shift is exact.
+# into done (bit 0) and digest (bits 256:1).
+#
+# NOTE: We use hex constants for the masks instead of `(1 << 256) - 1`, because
+# Vivado 2026.1's Tcl `expr` computes bit shifts >64 as wide-int (silently
+# truncated to 64 bits), which turned mask_256 into 0xffffffff and threw away
+# the top 224 bits of every digest.  Written as hex literals, Tcl treats them
+# as bignums directly and the arithmetic is exact.
+set MASK_256 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+set MASK_257 0x1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+
 proc decode_scan {tdo_hex dr_offset} {
+    global MASK_256 MASK_257
     set hex [string tolower [string trim $tdo_hex]]
     set hex [string map [list "_" "" " " "" "\n" "" "\r" "" "\t" ""] $hex]
     if {[string match "0x*" $hex]} {
@@ -148,10 +157,9 @@ proc decode_scan {tdo_hex dr_offset} {
         error "scan_dr_hw_jtag returned non-hex data: $tdo_hex"
     }
     set full   [expr "0x$hex"]
-    set slot   [expr {($full >> $dr_offset) & ((1 << 257) - 1)}]
+    set slot   [expr {($full >> $dr_offset) & $MASK_257}]
     set done   [expr {$slot & 1}]
-    set mask   [expr {(1 << 256) - 1}]
-    set digest [expr {($slot >> 1) & $mask}]
+    set digest [expr {($slot >> 1) & $MASK_256}]
     return [list $done [format %064x $digest]]
 }
 
@@ -171,10 +179,6 @@ for {set s 0} {$s < $NSTREAMS} {incr s} {
     set next_sel [expr {$s + 1}]
     set captured [scan_dr_hw_jtag $dr_total \
                      -tdi [make_dr_tdi $next_sel $our_dr_offset]]
-    if {$s < 2} {
-        puts [format "  \[dbg\] raw captured (s=%d): len=%d llen=%d value=%s" \
-                     $s [string length "$captured"] [llength $captured] $captured]
-    }
     lassign [decode_scan $captured $our_dr_offset] done digest
     if {!$done && !$warned_not_done} {
         puts stderr "WARNING: BSCAN done bit is 0 — FPGA may not have finished.\
