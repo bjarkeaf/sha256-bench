@@ -171,6 +171,10 @@ for {set s 0} {$s < $NSTREAMS} {incr s} {
     set next_sel [expr {$s + 1}]
     set captured [scan_dr_hw_jtag $dr_total \
                      -tdi [make_dr_tdi $next_sel $our_dr_offset]]
+    if {$s < 2} {
+        puts [format "  \[dbg\] raw captured (s=%d): len=%d llen=%d value=%s" \
+                     $s [string length "$captured"] [llength $captured] $captured]
+    }
     lassign [decode_scan $captured $our_dr_offset] done digest
     if {!$done && !$warned_not_done} {
         puts stderr "WARNING: BSCAN done bit is 0 — FPGA may not have finished.\
