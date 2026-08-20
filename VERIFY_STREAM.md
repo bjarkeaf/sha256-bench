@@ -140,8 +140,30 @@ Reads digests back over the same JTAG connection used for programming, via
 the `BSCANE2` USER1 scan chain. `bench/program_bscan.tcl` programs the board
 and calls `scan_dr_hw_jtag` to shift out all digests in one pass.
 
+**Before launching the multi-hour sweep**: build LOOP=1 alone (~30 min P&R),
+then verify the readback protocol works before spending the rest of the
+budget on the other six LOOPs:
+
 ```sh
 cd sha256-bench
+vivado -mode batch -source synth/bscan.tcl -tclargs 1
+vivado -mode batch -source bench/program_bscan.tcl \
+       -tclargs vivado_bscan_L1/sha256_stream_bscan_top.bit 64
+```
+
+The second command re-runs in ~10 s against the already-built bitstream, so
+you can iterate on `bench/program_bscan.tcl` without rebuilding. Success =
+64 STREAM lines + ROOT with real-looking digests (not `0000...0002` etc.).
+Cross-check against the Python golden:
+
+```sh
+LOOP=1 python3 sim/ref_stream.py > golden_L1.txt
+# Compare the two STREAM+ROOT sets by eye or with diff.
+```
+
+Only launch the full sweep after LOOP=1 matches. Then:
+
+```sh
 python3 bench/hw_sweep.py --bscan
 ```
 
