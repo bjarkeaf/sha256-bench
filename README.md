@@ -54,13 +54,35 @@ the 64 per-stream digests plus an XOR-reduce root.
 
 ```sh
 cd sim
-make check-stream   # runs RTL sim + Python golden ref, diffs digests
+make check-stream       # RTL vs bespoke Python ref (stdlib only)
+make check-stream-lib   # RTL vs library-based ref (needs `pip install sha256`)
+make check-stream-all   # three-way: RTL vs both refs vs each other
 ```
 
 Passes if the 64 stream digests and root produced by `sha256_stream_top` (via
-`tb_stream_top.v`) match those from `ref_stream.py`. Neither tool covers real
-packet padding or the final SHA-based root; the scheduler is the thing under
-test.
+`tb_stream_top.v`) match those from the reference(s). Two references are kept
+so a bug in one doesn't hide a bug in the RTL: `ref_stream.py` is a
+hand-rolled SHA-256 with no dependencies, `ref_stream_lib.py` uses the
+`cloudtools/sha256` PyPI package (one of the few that exposes SHA-256
+midstate, needed here because the chain does raw compression rounds with no
+inter-round padding). Neither tool covers real packet padding or the final
+SHA-based root; the scheduler is the thing under test.
+
+### LED BIST bitstream for Pynq-Z2
+
+Board-level wrapper (`rtl/sha256_stream_bist_top.v`) that runs the streaming
+sim once at power-on and lights LD0 (match) or LD2 (mismatch) after ~52 us,
+with LD3 as a heartbeat. Golden root is baked in as a `localparam` from
+`sim/ref_stream_lib.py`.
+
+```sh
+cd sha256-bench
+vivado -mode batch -source synth/bist.tcl
+# → vivado_bist/sha256_stream_bist_top.bit
+```
+
+Flash with Vivado Hardware Manager → Auto Connect → Program Device.
+See `VERIFY_STREAM.md` for the full LED-pattern table.
 
 ## Synthesise (single point)
 

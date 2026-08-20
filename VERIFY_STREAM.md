@@ -24,19 +24,27 @@ bit.
   port unconnected).
 - `rtl/sha256_stream_top.v` — new. 64-stream scheduler, LFSR PRNG, state RAM,
   external chain-add, XOR-reduce root.
-- `sim/ref_stream.py` — new. Golden reference. Includes a SHA-256("abc")
-  self-test at startup.
+- `sim/ref_stream.py` — new. Bespoke-code golden reference (stdlib only).
+  Includes a SHA-256("abc") self-test at startup.
+- `sim/ref_stream_lib.py` — new. Second golden reference using the
+  `cloudtools/sha256` PyPI package for the SHA-256 primitive. Same output
+  format; requires `pip install sha256`.
 - `sim/tb_stream_top.v` — new. Runs the DUT, prints per-stream digests + root
-  in the same format as the Python reference.
-- `sim/Makefile` — added `sim-stream` and `check-stream` targets.
+  in the same format as the Python references.
+- `sim/Makefile` — added `sim-stream`, `check-stream`, `check-stream-lib`, and
+  `check-stream-all` targets.
 - `README.md` — added a "Streaming sim" subsection.
 
 ## Prerequisites
 
 - `iverilog` + `vvp` on `PATH` (already required for `make sim`).
-- `python3` (stdlib only, no packages).
+- `python3` (stdlib only for the bespoke reference).
+- Optional (for the library-based reference and the three-way check):
+  `pip install sha256` (the `cloudtools/sha256` package).
 
 ## Run
+
+Primary check (stdlib only):
 
 ```sh
 cd sim
@@ -50,6 +58,22 @@ PASS: RTL matches Python reference (64 stream digests + root)
 ```
 
 If it fails, the target prints the first 20 lines of `diff`.
+
+Optional three-way check (RTL vs bespoke ref vs library ref):
+
+```sh
+cd sim
+pip install sha256   # once
+make check-stream-all
+```
+
+Expected output:
+
+```
+PASS: RTL == bespoke ref
+PASS: RTL == library ref
+PASS: bespoke ref == library ref
+```
 
 ## Regression check on the existing bench
 
@@ -88,6 +112,44 @@ Likely suspects, in order of prior probability:
    is undriven → chain sees `X + IV`. Grep for `tx_state_final` in
    `rtl/sha256_transform.v`; the `assign tx_state_final = HASHERS[...].state;`
    line should be present.
+
+## Optional: hardware BIST on the Pynq-Z2
+
+Once the sim passes, the same design can be flashed to the board and it will
+self-check via LEDs. No PS, no PYNQ, no host software — just program the bit
+and look at the LEDs.
+
+Files:
+
+- `rtl/sha256_stream_bist_top.v` — board wrapper. Instantiates
+  `sha256_stream_top`, compares its `root_digest` to a hard-coded
+  `GOLDEN_ROOT`, latches the pass/fail bit onto an LED.
+- `synth/bist.tcl` — full P&R flow that generates `sha256_stream_bist_top.bit`.
+- `synth/bist.xdc` — Pynq-Z2 pin constraints (clk on H16, LEDs on M14/M15/G14/D18).
+
+Build:
+
+```sh
+cd sha256-bench
+vivado -mode batch -source synth/bist.tcl
+# → vivado_bist/sha256_stream_bist_top.bit
+```
+
+Flash: open Vivado → **Open Hardware Manager** → **Auto Connect** → **Program
+Device** → select `vivado_bist/sha256_stream_bist_top.bit`.
+
+LED interpretation (Pynq-Z2 LD0..LD3):
+
+| LEDs after ~1 s                                | Meaning |
+|---|---|
+| LD3 blinking, LD1 on, LD0 on, LD2 off          | **PASS** — hardware root matches Python golden |
+| LD3 blinking, LD1 on, LD0 off, LD2 on          | **FAIL** — root differs from golden (rebuild, or golden is stale) |
+| LD3 not blinking                               | No clock / bad configuration / wrong board |
+| LD3 blinking, LD1 off after several seconds    | Pipeline never asserted done — timing violation? re-read `timing.rpt` |
+
+If the golden ever needs updating (e.g. the LFSR seeds change), rerun
+`python3 sim/ref_stream_lib.py`, take the `ROOT = ...` line, and update the
+`GOLDEN_ROOT` `localparam` in `rtl/sha256_stream_bist_top.v`.
 
 ## Once it passes
 
